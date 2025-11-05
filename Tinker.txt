@@ -1,0 +1,15 @@
+Use huggingface transformers to load models and tinker with their
+prompt inputs, settings, weights, inference process and any other properties or methods related to using
+language models.
+
+Allow incorporation of other project repos such as RepE Representation Engineering
+And include methods for training, fine-tuning, and evaluating models. 
+
+Provide a platform with prepared stubs and methods for speculative model operations such as:
+Apply cellular automata to model weights.
+Apply genetic algorithms to model parameters.
+Use synthetic annealing to optimize model parameters.
+any other weird thing that crosses my mind.
+
+
+

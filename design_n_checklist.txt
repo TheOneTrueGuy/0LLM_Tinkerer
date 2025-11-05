@@ -1,0 +1,295 @@
+# LLM Tinkerer Platform Design Plan
+
+## Phase 1: Core GUI Implementation
+### Basic Model Loading Interface
+- [x] Create main Gradio interface
+- [x] Implement model selection dropdown (HuggingFace models)
+- [x] Add model configuration panel (temperature, max length, etc.)
+- [x] Create model loading status indicator
+- [ ] Implement model caching system
+
+### Prompt Interface
+- [x] Design prompt input text area with markdown support
+- [ ] Add prompt history tracking with Gradio state
+- [ ] Implement prompt templates system
+- [x] Create prompt parameter controls
+- [ ] Add prompt validation and formatting
+
+### Inference Controls
+- [x] Add inference execution button with progress tracking
+- [ ] Implement streaming output display
+- [ ] Create cancel inference option
+- [ ] Add batch processing capability
+- [ ] Implement inference queue system
+
+### Output Management
+- [x] Design output display area with syntax highlighting
+- [ ] Implement output formatting options
+- [x] Create output export functionality (JSON, TXT, CSV)
+- [x] Add output history tracking
+- [ ] Implement output comparison view
+
+## Phase 2: Advanced Features
+### Model Manipulation
+- [x] Implement weight visualization using Gradio's plotting components
+- [ ] Add parameter adjustment interface
+- [ ] Create model comparison tools
+- [ ] Implement model merging capabilities
+- [ ] Add model performance metrics dashboard
+
+### Experimental Features
+- [ ] Cellular automata integration with visual feedback
+- [ ] Genetic algorithm framework with progress visualization
+- [ ] Simulated annealing optimization with parameter tracking
+- [ ] Custom parameter mutation tools
+- [ ] Interactive model weight manipulation
+
+### Training & Fine-tuning
+- [ ] Dataset management interface with preview
+- [ ] Training configuration panel
+- [ ] Fine-tuning controls with progress tracking
+- [ ] Training progress monitoring with real-time plots
+- [ ] Model checkpoint management
+
+### Evaluation Tools
+- [ ] Performance metrics dashboard with interactive charts
+- [ ] Model comparison tools with side-by-side outputs
+- [ ] Output quality assessment interface
+- [ ] Benchmark integration
+- [ ] Custom metric visualization
+
+## Technical Requirements
+1. Python 3.8+
+2. Required Libraries:
+   - transformers
+   - torch
+   - gradio
+   - numpy
+   - pandas
+   - matplotlib
+   - plotly (for interactive visualizations)
+   - pyvis
+   - networkx
+
+## Implementation Checklist
+
+### Setup Phase
+- [x] Initialize project repository
+- [x] Set up virtual environment
+- [x] Create requirements.txt
+- [x] Set up development environment
+- [x] Configure Gradio theme and layout
+
+### Core Development
+- [x] Implement basic Gradio interface
+- [x] Create model loading system with caching
+- [x] Develop prompt management
+- [x] Build inference pipeline
+- [x] Implement output handling
+- [x] Set up state management
+
+### Testing Phase
+- [ ] Unit tests for core components
+- [ ] Integration testing
+- [ ] UI/UX testing
+- [ ] Performance testing
+- [ ] Load testing for concurrent users
+
+### Documentation
+- [x] User documentation
+- [ ] API documentation
+- [x] Installation guide
+- [x] Usage examples
+- [ ] Deployment guide
+
+### Deployment
+- [ ] Package application
+- [ ] Create installation script
+- [ ] Prepare release notes
+- [ ] Set up update mechanism
+- [ ] Configure deployment options (local, cloud, etc.)
+
+## Next Steps
+1. Set up project structure
+2. Create basic Gradio interface
+3. Implement model loading functionality
+4. Develop prompt interface
+5. Build inference pipeline
+6. Create output management system
+
+## Notes
+- Focus on modular design for easy extension
+- Implement proper error handling
+- Ensure thread safety for long operations
+- Maintain clean code structure
+- Document all major components
+- Use Gradio's built-in components where possible
+- Implement proper state management
+- Consider deployment options early
+- Plan for scalability
+
+## Additional Features for Enhanced Learning and Tinkering
+
+### Interactive Learning Features
+- [ ] Add tooltips and explanations for model components
+- [ ] Visual guides for understanding attention mechanisms
+- [ ] "What's happening?" explanations during inference
+- [ ] Interactive tutorials for model concepts
+- [ ] Layer-wise explanation system
+
+### Model Surgery Tools
+- [ ] Layer freezing during inference
+- [ ] Layer ablation testing interface
+- [ ] Weight perturbation experiments
+- [ ] Model component isolation testing
+- [ ] Parameter sensitivity analysis
+
+### Enhanced Visualization
+- [ ] Head-by-head attention visualization
+- [ ] Attention flow animation during generation
+- [ ] Token importance highlighting
+- [ ] Weight distribution histograms
+- [ ] Gradient flow visualization
+- [ ] Token embedding visualization
+- [ ] Position encoding visualization
+
+### Performance and Debugging
+- [ ] Real-time memory usage tracking
+- [ ] Layer-wise inference time breakdown
+- [ ] GPU utilization monitoring
+- [ ] Layer activation monitoring
+- [ ] Gradient checkpointing visualization
+- [ ] Memory leak detection
+- [ ] Performance bottleneck identification
+
+### Advanced Analysis Tools
+- [ ] Token importance scoring
+- [ ] Model comparison dashboard
+- [ ] Side-by-side weight comparison
+- [ ] Attention pattern comparison
+- [ ] Performance benchmarking suite
+- [ ] Model behavior analysis tools
+- [ ] Output quality metrics 
+
+
+- [ ] add Representation Engineering/Control Vectors
+- [ ] add https://github.com/safety-research/circuit-tracer/tree/main
+          https://github.com/safety-research/circuit-tracer/blob/main/demos/circuit_tracing_tutorial.ipynb
+
+## Minimal Integration Plan: circuit-tracer
+
+### 1. Clone and Install circuit-tracer
+- Clone the [circuit-tracer repo](https://github.com/safety-research/circuit-tracer).
+- From the cloned directory, run:  
+  `pip install .`
+- Ensure dependencies don't conflict with your current environment.
+
+### 2. Add a Simple Gradio UI Element
+- In your Gradio app, add a section (tab, button, or panel) for "Circuit Tracing."
+- Provide a text input for the prompt and a dropdown for model/transcoder set (e.g., "gemma", "llama", or custom config path).
+
+### 3. Backend: Run circuit-tracer Attribution
+- When the user submits a prompt, use Python's subprocess module to call the circuit-tracer CLI with the appropriate arguments (prompt, transcoder set, slug, graph_file_dir, etc.).
+- Save the output files to a known directory.
+
+### 4. Launch the Visualization Server
+- After attribution and graph file creation, launch the circuit-tracer server (again via subprocess).
+- Capture the port (default is 8041, but you may want to allow the user to specify or randomize it to avoid conflicts).
+
+### 5. Provide a Link/Button to Open the Visualization
+- In your Gradio UI, display a button or link that opens `http://localhost:8041` (or the chosen port) in the user's browser.
+- Optionally, display a message/instructions about what to expect.
+
+### 6. (Optional) Display Static Results in Gradio
+- If you want, you can also parse and display some static results (e.g., summary stats, graph images) in your Gradio app, but this is not required for minimal integration.
+
+### 7. (Optional) Clean Up
+- Provide a way to stop the server from your UI, or instruct the user to close it manually.
+
+## Weight Inversion Tinker Feature
+
+### Concept
+A "one-button tinker" feature that allows inverting model weights by multiplying them by -1. This can be applied to:
+- Entire model (all weights)
+- Specific layers (attention, MLP, embeddings, output)
+- Specific blocks within layers
+- Individual weight matrices (query, key, value, etc.)
+
+### Mathematical Approach
+- Simple multiplication: `weight *= -1`
+- Preserves weight magnitudes, only flips signs
+- Can be applied selectively to different components
+- Reversible operation (apply twice to restore original)
+
+### Implementation Sketch
+
+#### Core Function
+```python
+def invert_weights(model, inversion_config):
+    """
+    Invert model weights based on configuration.
+    
+    Args:
+        model: The transformer model
+        inversion_config: Dict specifying what to invert
+    """
+    for name, param in model.named_parameters():
+        if should_invert_parameter(name, inversion_config):
+            param.data *= -1
+            
+def should_invert_parameter(param_name, config):
+    """Determine if a parameter should be inverted based on config."""
+    # Logic to match parameter names against inversion rules
+    pass
+```
+
+#### Gradio Interface Components
+- Dropdown: Inversion scope (Full Model, Attention Only, MLP Only, Output Only, Custom)
+- Checkboxes: Specific layers to invert
+- Slider: Layer range selection
+- Button: "Invert Weights"
+- Button: "Restore Original" (undo inversion)
+- Status display: Show what was inverted
+
+#### Inversion Configurations
+1. **Full Model**: All parameters
+2. **Attention Only**: All attention weights (Q, K, V, output projection)
+3. **MLP Only**: All MLP/feed-forward weights
+4. **Output Layer**: Final classification/language modeling head
+5. **Embedding Layer**: Input token embeddings
+6. **Custom**: User-selected specific layers/components
+
+#### Safety Features
+- **Backup**: Store original weights before inversion
+- **Undo**: One-click restoration
+- **Preview**: Show which parameters will be affected
+- **Confirmation**: Require confirmation for full model inversion
+
+#### Advanced Options
+- **Partial Inversion**: Multiply by values other than -1 (e.g., -0.5, -2.0)
+- **Random Inversion**: Randomly invert subset of weights
+- **Layer-wise Analysis**: Invert one layer at a time and compare outputs
+- **Progressive Inversion**: Gradually invert from output to input layers
+
+### Expected Experimental Results
+- **Full Model**: Likely nonsense output, useful for testing robustness
+- **Output Only**: "Anti-model" that predicts least likely tokens
+- **Attention Only**: Inverted attention patterns, different focus
+- **MLP Only**: Altered reasoning/feature detection
+- **Single Layers**: Identify critical layers for specific behaviors
+
+### Integration Points
+- Add to existing model manipulation section
+- Include in experimental features tab
+- Provide before/after comparison tools
+- Log inversion history for reproducibility
+
+### Implementation Priority
+- [ ] Core inversion function
+- [ ] Basic Gradio interface (dropdown + button)
+- [ ] Weight backup/restore system
+- [ ] Parameter name matching logic
+- [ ] Safety confirmations
+- [ ] Advanced inversion options
+- [ ] Integration with existing model loading
+- [ ] Before/after comparison tools
