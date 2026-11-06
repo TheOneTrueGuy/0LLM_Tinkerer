@@ -58,6 +58,57 @@
 - [ ] Benchmark integration
 - [ ] Custom metric visualization
 
+## Phase 3: Alignment & Safety Evaluation — MOVED
+
+Do not implement this inside LLM Tinkerer. Spec and intent live in `safety+align/`.
+Promote that folder to its own repo. Tinkerer remains a tinker toy; the sibling is a paired-intervention experiment lab.
+
+Historical checklist kept below for reference only.
+
+### Paired intervention eval (do first)
+- [ ] Before/after comparison view for the same prompt (original vs inverted/edited)
+- [ ] Batch run a prompt list against current weights; log to experiment records
+- [ ] Diff view: which tokens / refusals / facts changed after surgery
+- [ ] Save intervention config with each run (type, multiplier, layer range, custom rules)
+
+### Safety / refusal probes
+- [ ] Built-in tiny probe set: benign, disallowed-request, jailbreak-style, over-refusal ( innocuous-but-refused)
+- [ ] Simple scores: refused / complied / unclear (keyword + optional judge later)
+- [ ] Track over-refusal vs under-refusal after inversion of output / late layers
+- [ ] Optional later wrap of public suites (HarmBench, StrongREJECT) — not a v1 requirement
+
+### Mechanistic safety experiments
+- [ ] Layer ablation: invert or zero one layer range at a time; plot refusal vs capability
+- [ ] Component ablation: attention-only vs MLP-only vs residual vs lm_head
+- [ ] Logit lens / next-token probe on refusal vs compliance tokens
+- [ ] Attention-head inspection on safety-relevant prompts (reuse Layer Inspection)
+
+### Alignment-relevant behaviors
+- [ ] Sycophancy probes (user is wrong vs user is right)
+- [ ] Honesty / deception probes (known-fact vs user-pressure)
+- [ ] Goal-hijack / instruction-hierarchy probes (system vs user conflict) — small set only
+- [ ] Capability vs alignment tradeoff chart after each intervention
+
+### Representation engineering
+- [ ] Extract a control vector from contrastive pairs (e.g. refuse vs comply)
+- [ ] Add / subtract that vector at chosen layers (fits Weight Editing)
+- [ ] Measure probe scores as a function of steering strength
+
+### Circuit Tracer for safety
+- [ ] Run attribution on a refusal and on a jailbreak of the same model
+- [ ] Jump from attributed features/layers into invert/edit of those components
+- [ ] Save graph paths next to the experiment log
+
+### Experiment log (portfolio-ready)
+- [ ] Structured records: model, prompt set, intervention, metrics, before/after text
+- [ ] Export a single markdown/HTML report for a "I inverted late MLP and refusal collapsed" writeup
+- [ ] Never log API keys; keep harmful probe content in a clearly marked local file
+
+### Guardrails for this lab
+- [ ] Confirmation already required for inversion — keep it
+- [ ] Do not ship exploit PoCs or attack payloads; probes stay at the prompt/eval layer
+- [ ] Document intended use: research on *this user's* loaded models, not attacking third-party systems
+
 ## Technical Requirements
 1. Python 3.8+
 2. Required Libraries:
@@ -237,14 +288,14 @@ def invert_weights(model, inversion_config):
         if should_invert_parameter(name, inversion_config):
             param.data *= -1
             
-def should_invert_parameter(param_name, config):
-    """Determine if a parameter should be inverted based on config."""
-    # Logic to match parameter names against inversion rules
-    pass
-```
-
-#### Gradio Interface Components
-- Dropdown: Inversion scope (Full Model, Attention Only, MLP Only, Output Only, Custom)
+defxshould_invert_parameter(param_name, config):
+   x"""Determine if a parameter should be inverted based on config."""
+   x# Logic to match parameter names against inversion rules
+   xpass
+```x
+x
+###x Gradio Interface Components
+- Dropdown: Inversion scope (Full s  (now the first PhaMe 3 item)odel, Attention Only, MLP Only, Output Only, Custom)
 - Checkboxes: Specific layers to invert
 - Slider: Layer range selection
 - Button: "Invert Weights"

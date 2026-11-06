@@ -11,5 +11,17 @@ Apply genetic algorithms to model parameters.
 Use synthetic annealing to optimize model parameters.
 any other weird thing that crosses my mind.
 
+Next workflow (see progress_and_plan.md): one tinker loop —
+Load → mutate (invert / graph / named param) → paired generate → keep or restore.
+Unify those as a patch stack before adding new mutation types.
+
+Feature creep (later, do not start these in the same slice):
+- Marshals: named stacks of weight changes; generate after each step; replay / skip / reorder.
+- Cascade compare: output from original, then after change 1, after 1+2, etc.
+- Hot-swap / patch stack: record inversions and edits as ops (not full weight clones); replay or unreplay onto the live model when toggling views. Needed before marshals on big models.
+- Layer freeze / ablation at inference.
+- Head-by-head attention.
+- Streaming generate + cancel.
+
 
 

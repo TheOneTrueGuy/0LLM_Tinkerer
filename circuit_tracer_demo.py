@@ -8,6 +8,7 @@ This script demonstrates the basic functionality of circuit-tracer:
 
 import os
 import subprocess
+import time
 import webbrowser
 from pathlib import Path
 import gradio as gr
@@ -17,14 +18,42 @@ import torch
 GRAPH_FILE_DIR = Path("circuit_tracer_graphs")
 GRAPH_FILE_DIR.mkdir(exist_ok=True)
 
+# circuit-tracer lives in a separate venv (circuit_venv) because its deps
+# (transformers<5, huggingface-hub<1.0) conflict with the main env.
+# Resolution order: CIRCUIT_TRACER_EXE env var -> sibling circuit_venv ->
+# "circuit-tracer" on PATH.
+def circuit_tracer_exe() -> str:
+    exe = os.environ.get("CIRCUIT_TRACER_EXE")
+    if exe:
+        return exe
+    local = Path(__file__).parent / "circuit_venv" / "Scripts" / "circuit-tracer.exe"
+    if local.exists():
+        return str(local)
+    local_posix = Path(__file__).parent / "circuit_venv" / "bin" / "circuit-tracer"
+    if local_posix.exists():
+        return str(local_posix)
+    return "circuit-tracer"
+
+
 def setup_environment():
-    """Ensure all required packages are installed."""
+    """Check the circuit-tracer CLI is reachable; tell the user how to install it if not."""
+    exe = circuit_tracer_exe()
     try:
-        import circuit_tracer
-        print("circuit-tracer is already installed")
-    except ImportError:
-        print("Installing circuit-tracer...")
-        subprocess.run(["pip", "install", "git+https://github.com/safety-research/circuit-tracer.git"])
+        probe = subprocess.run(
+            [exe, "--help"], capture_output=True, text=True, timeout=60
+        )
+        if probe.returncode == 0:
+            print(f"circuit-tracer found: {exe}")
+            return True
+    except Exception:
+        pass
+    print(
+        "circuit-tracer CLI not found. Install it into its own env:\n"
+        "  python -m venv circuit_venv\n"
+        "  circuit_venv\\Scripts\\python.exe -m pip install git+https://github.com/safety-research/circuit-tracer.git\n"
+        "or set CIRCUIT_TRACER_EXE to an existing install."
+    )
+    return False
 
 def run_circuit_tracer(prompt, transcoder_set="gemma", port=8041):
     """
@@ -40,7 +69,7 @@ def run_circuit_tracer(prompt, transcoder_set="gemma", port=8041):
     
     # Construct the circuit-tracer command
     cmd = [
-        "circuit-tracer", "attribute",
+        circuit_tracer_exe(), "attribute",
         "--prompt", prompt,
         "--transcoder_set", transcoder_set,
         "--slug", slug,
@@ -59,14 +88,21 @@ def run_circuit_tracer(prompt, transcoder_set="gemma", port=8041):
         )
         
         # Wait for server to start
-        while True:
+        deadline = time.time() + 120
+        started = False
+        while time.time() < deadline:
             output = process.stderr.readline()
             if "Serving on" in output:
                 print(f"Server started: {output.strip()}")
+                started = True
                 break
             if process.poll() is not None:
-                print("Server failed to start")
+                err = process.stderr.read() if process.stderr else ""
+                print(f"Server failed to start: {err}")
                 return None
+        if not started:
+            print("Timed out waiting for circuit-tracer server")
+            return None
         
         # Open the visualization in the default browser
         url = f"http://localhost:{port}"

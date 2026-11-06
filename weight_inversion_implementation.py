@@ -5,10 +5,15 @@ A tool for inverting transformer model weights to explore model behavior.
 
 import torch
 import torch.nn as nn
-import gradio as gr
 import copy
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 import re
+
+try:
+    import gradio as gr
+except ImportError:
+    gr = None  # Gradio is only required for the standalone UI, not the core inverter
 
 class WeightInverter:
     """Handles weight inversion operations on transformer models."""
@@ -16,25 +21,80 @@ class WeightInverter:
     def __init__(self, model):
         self.model = model
         self.original_weights = {}
+        self.working_weights = {}
+        self.view_mode = "modified"
         self.inversion_history = []
-        
+        self._layer_pattern = None
+
+    def detect_layer_pattern(self):
+        """Scan parameter names for common layer patterns and pick the most common."""
+        patterns = [r'\.layers?\.(\d+)\.', r'\.h\.(\d+)\.', r'\.block\.(\d+)\.', r'\.layer\.(\d+)\.']
+        counts = {pat: 0 for pat in patterns}
+        for name, _ in self.model.named_parameters():
+            for pat in patterns:
+                if re.search(pat, name):
+                    counts[pat] += 1
+        best_pattern = max(counts, key=counts.get)
+        if counts[best_pattern] == 0:
+            return None
+        return best_pattern
+
+    def clone_params(self):
+        snapshot = {}
+        for name, param in self.model.named_parameters():
+            snapshot[name] = param.data.clone()
+        return snapshot
+
+    def apply_params(self, snapshot):
+        if not snapshot:
+            raise ValueError("No snapshot to apply.")
+        for name, param in self.model.named_parameters():
+            if name in snapshot:
+                param.data.copy_(snapshot[name])
+
     def backup_weights(self):
         """Create a backup of all model weights."""
-        self.original_weights = {}
-        for name, param in self.model.named_parameters():
-            self.original_weights[name] = param.data.clone()
-    
+        self.original_weights = self.clone_params()
+        self.working_weights = {}
+        self.view_mode = "modified"
+
     def restore_weights(self):
         """Restore model to original weights."""
         if not self.original_weights:
             raise ValueError("No backup found. Call backup_weights() first.")
-        
-        for name, param in self.model.named_parameters():
-            if name in self.original_weights:
-                param.data.copy_(self.original_weights[name])
-        
+        self.apply_params(self.original_weights)
+        self.working_weights = {}
+        self.view_mode = "modified"
         self.inversion_history.clear()
-    
+
+    def snapshot_modified(self):
+        if self.view_mode == "original" and self.working_weights:
+            return self.working_weights
+        return self.clone_params()
+
+    def set_view_mode(self, mode: str) -> str:
+        """Swap live tensors between original backup and modified working copy."""
+        mode = (mode or "modified").lower()
+        if mode not in ("original", "modified"):
+            raise ValueError("View mode must be 'original' or 'modified'.")
+        if not self.original_weights:
+            self.backup_weights()
+        if mode == self.view_mode:
+            return f"Already showing {mode} weights."
+        if mode == "original":
+            self.working_weights = self.clone_params()
+            self.apply_params(self.original_weights)
+            self.view_mode = "original"
+            return "Live weights: ORIGINAL backup."
+        self.apply_params(self.working_weights or self.original_weights)
+        self.view_mode = "modified"
+        return "Live weights: MODIFIED (current tinkering)."
+
+    def ensure_modified_view(self):
+        """Inversions and edits apply to the modified branch."""
+        if self.view_mode == "original":
+            self.set_view_mode("modified")
+
     def invert_weights(self, inversion_config: Dict) -> Dict:
         """
         Invert model weights based on configuration.
@@ -47,6 +107,7 @@ class WeightInverter:
         """
         if not self.original_weights:
             self.backup_weights()
+        self.ensure_modified_view()
         
         inverted_params = []
         total_params = 0
@@ -61,7 +122,7 @@ class WeightInverter:
         inversion_record = {
             'config': inversion_config,
             'inverted_params': inverted_params,
-            'timestamp': torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
+            'timestamp': datetime.now().isoformat()
         }
         self.inversion_history.append(inversion_record)
         
@@ -151,8 +212,11 @@ class WeightInverter:
     
     def in_layer_range(self, param_name: str, start: int, end: int) -> bool:
         """Check if parameter is in specified layer range."""
-        # Extract layer number from parameter name
-        layer_match = re.search(r'\.layers?\.(\d+)\.', param_name)
+        if self._layer_pattern is None:
+            self._layer_pattern = self.detect_layer_pattern()
+        if not self._layer_pattern:
+            return False
+        layer_match = re.search(self._layer_pattern, param_name)
         if layer_match:
             layer_num = int(layer_match.group(1))
             return start <= layer_num <= end

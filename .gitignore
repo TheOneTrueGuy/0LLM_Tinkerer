@@ -25,6 +25,7 @@ MANIFEST
 
 # Virtual Environments
 venv/
+circuit_venv/
 env/
 ENV/
 env.bak/
@@ -64,6 +65,8 @@ ipython_config.py
 .env.local
 .env.*.local
 *.env
+runpod_api_key.txt
+runpod.key
 
 # IDEs and Editors
 .vscode/
@@ -166,4 +169,9 @@ cython_debug/
 
 # Local embedded repos/packages
 blackclue/
+
+# LLM Tinkerer runtime artifacts
+neuron_runs/
+circuit_tracer_graphs/
+saved_model/
 

@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LLM Tinkerer — Architecture</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #1a2332;
+      --panel-2: #243044;
+      --ink: #e8eef7;
+      --muted: #93a4bb;
+      --accent: #6ee7b7;
+      --blue: #7dd3fc;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --violet: #c4b5fd;
+      --line: #3d4f66;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #1d3a4a 0%, transparent 50%),
+                  radial-gradient(900px 500px at 90% 10%, #2a1f4a 0%, transparent 45%),
+                  var(--bg);
+      color: var(--ink);
+      line-height: 1.45;
+    }
+    header {
+      padding: 28px 32px 8px;
+      max-width: 1180px;
+      margin: 0 auto;
+    }
+    h1 { margin: 0 0 6px; font-size: 28px; letter-spacing: -0.03em; }
+    .subtitle { color: var(--muted); max-width: 820px; }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 16px 24px 48px; }
+    .row { display: grid; gap: 14px; margin: 14px 0; }
+    .cols-5 { grid-template-columns: repeat(5, 1fr); }
+    .cols-3 { grid-template-columns: 1.1fr 0.9fr 1.1fr; }
+    .cols-2 { grid-template-columns: 1fr 1fr; }
+    .card {
+      background: linear-gradient(180deg, var(--panel) 0%, #151d29 100%);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 14px 16px;
+      min-height: 118px;
+    }
+    .card h3 { margin: 0 0 8px; font-size: 14px; }
+    .tag {
+      display: inline-block;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 3px 7px;
+      border-radius: 999px;
+      margin-bottom: 8px;
+      font-weight: 700;
+    }
+    .now { background: #064e3b; color: var(--accent); }
+    .next { background: #3b2a06; color: var(--amber); }
+    .later { background: #3b1020; color: var(--rose); }
+    .core { background: #0b3a4a; color: var(--blue); }
+    ul { margin: 0; padding-left: 16px; color: var(--muted); font-size: 13px; }
+    .arrow {
+      text-align: center;
+      color: var(--accent);
+      font-size: 22px;
+      margin: 4px 0;
+      letter-spacing: 8px;
+    }
+    .flow {
+      display: flex;
+      align-items: stretch;
+      gap: 10px;
+      overflow-x: auto;
+      padding: 6px 0 10px;
+    }
+    .node {
+      flex: 1;
+      min-width: 150px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+    }
+    .node strong { display: block; margin-bottom: 6px; }
+    .chevron {
+      align-self: center;
+      color: var(--violet);
+      font-size: 22px;
+      flex: 0 0 auto;
+    }
+    .legend { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
+    footer { color: var(--muted); font-size: 12px; padding-top: 8px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>LLM Tinkerer</h1>
+    <p class="subtitle">
+      A Gradio workbench for loading HuggingFace transformers and <em>tinkering</em>
+      with prompts, generation settings, weights, and inference — locally or on a RunPod GPU.
+    </p>
+  </header>
+  <div class="wrap">
+    <div class="flow">
+      <div class="node"><strong>You</strong><span style="color:var(--muted);font-size:13px">Browser UI at localhost:7860</span></div>
+      <div class="chevron">→</div>
+      <div class="node"><strong>app.py</strong><span style="color:var(--muted);font-size:13px">Gradio tabs + ModelManager</span></div>
+      <div class="chevron">→</div>
+      <div class="node"><strong>Local GPU / CPU</strong><span style="color:var(--muted);font-size:13px">Load, generate, invert, edit</span></div>
+      <div class="chevron">or</div>
+      <div class="node"><strong>RunPod GPU pod</strong><span style="color:var(--muted);font-size:13px">dockerArgs Flask handler</span></div>
+    </div>
+
+    <div class="row cols-5">
+      <div class="card">
+        <span class="tag now">Now</span>
+        <h3>Text Generation</h3>
+        <ul>
+          <li>Load HF causal LMs</li>
+          <li>Temperature / max length</li>
+          <li>Save to outputs.jsonl</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag now">Now</span>
+        <h3>Layer Inspection</h3>
+        <ul>
+          <li>Architecture graph (pyvis)</li>
+          <li>Weight heatmaps</li>
+          <li>Attention patterns</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag now">Now</span>
+        <h3>Weight Inversion</h3>
+        <ul>
+          <li>Scale selected params</li>
+          <li>Layer-range / custom rules</li>
+          <li>Backup + restore</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag now">Now</span>
+        <h3>Weight Editing</h3>
+        <ul>
+          <li>Set / scale / randomize</li>
+          <li>Direct matrix edit</li>
+          <li>Param stats + preview</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag now">Now</span>
+        <h3>RunPod Tinker</h3>
+        <ul>
+          <li>Deploy GPU pod via GraphQL</li>
+          <li>Remote load / generate</li>
+          <li>Remote invert / restore</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="arrow">▼  how the pieces fit  ▼</div>
+
+    <div class="row cols-3">
+      <div class="card">
+        <span class="tag core">Core</span>
+        <h3>Local stack</h3>
+        <ul>
+          <li><code>app.py</code> — UI + ModelManager + WeightInverter</li>
+          <li><code>model_visualizer.py</code> — graphs &amp; Plotly</li>
+          <li><code>weight_inversion_implementation.py</code> — inverter used locally and on the pod</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag core">Remote</span>
+        <h3>RunPod path</h3>
+        <ul>
+          <li><code>runpod_manager.py</code> talks GraphQL + HTTP</li>
+          <li>Handler + inverter are base64-embedded in dockerArgs</li>
+          <li><code>runpod_handler.py</code> Flask API on port 5000</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag core">Side quests</span>
+        <h3>Not in the main UI yet</h3>
+        <ul>
+          <li><code>circuit_tracer_demo.py</code> — attribution graphs</li>
+          <li>GGUF loading is a stub</li>
+          <li>No training / fine-tune UI yet</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="arrow">▼  where it is going  ▼</div>
+
+    <div class="row cols-2">
+      <div class="card">
+        <span class="tag next">Near-term</span>
+        <h3>Make tinkering a library, then a service</h3>
+        <ul>
+          <li>Extract invert / edit / inspect into an importable Python package</li>
+          <li>MCP server so LLM assistants can call these tools</li>
+          <li>Finish circuit-tracer as a first-class tab</li>
+          <li>Model caching, streaming, cancel, prompt history</li>
+        </ul>
+      </div>
+      <div class="card">
+        <span class="tag later">Speculative</span>
+        <h3>Weird model surgery</h3>
+        <ul>
+          <li>Cellular automata on weights</li>
+          <li>Genetic algorithms / synthetic annealing</li>
+          <li>Representation Engineering (RepE), control vectors</li>
+          <li>Training, fine-tuning, eval, model merge</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="legend">
+      <span class="tag now">Built</span>
+      <span class="tag next">Planned next</span>
+      <span class="tag later">Vision / experimental</span>
+    </div>
+    <footer>Open this file in a browser. It is a snapshot of the repo as of the RunPod Tinker integration.</footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,8 @@
+Measure what happens to alignment-relevant behavior when you
+intervene on a model you loaded — then write it down.
+
+This is not a playground, a jailbreak kit, or a personality editor.
+It is an experiment log with a scalpel borrowed from LLM Tinkerer.
+
+Observe first. Steer only with a hypothesis. Restore always.
+Never attack systems you do not own.
