@@ -175,3 +175,8 @@ neuron_runs/
 circuit_tracer_graphs/
 saved_model/
 
+# Internal planning docs (kept local, not for the public repo)
+progress_and_plan.md
+design_n_checklist.txt
+Tinker.txt
+
