@@ -159,6 +159,56 @@ class WeightMerger:
     def has_edits(self) -> bool:
         return bool(self._backup)
 
+    # ---------- latent basis (stage 2 starter) ----------
+
+    @staticmethod
+    def latent_basis(
+        delta_sets: List[Dict[str, torch.Tensor]], n_components: int = 8
+    ) -> Dict[str, Any]:
+        """PCA over a set of weight-delta dicts (from ``delta()`` or elsewhere).
+
+        delta_sets: list of {param_name: delta_tensor} dicts — e.g. one per
+        merge, sweep variant, or marshal. Params common to all sets are
+        stacked into rows and reduced jointly.
+
+        Returns per-component variance share and per-param component slices
+        so callers can reassemble latent-space edits.
+        """
+        if len(delta_sets) < 2:
+            return {"error": "Need at least 2 delta sets for a basis."}
+        names = [
+            n for n in delta_sets[0]
+            if all(n in d and d[n].shape == delta_sets[0][n].shape for d in delta_sets[1:])
+        ]
+        if not names:
+            return {"error": "No common parameter names across delta sets."}
+        rows, shapes = [], {}
+        for d in delta_sets:
+            rows.append(torch.cat([d[n].flatten().float() for n in names]))
+        for n in names:
+            shapes[n] = tuple(delta_sets[0][n].shape)
+        X = torch.stack(rows)
+        X = X - X.mean(dim=0, keepdim=True)
+        _, S, V = torch.pca_lowrank(X, q=min(n_components, X.shape[0] - 1, X.shape[1]))
+        var = (S ** 2) / max(1, X.shape[0] - 1)
+        total = float(var.sum()) or 1.0
+
+        # split each component back into per-param slices
+        comp_slices, offset = [], 0
+        sizes = [int(torch.tensor(shapes[n]).prod()) for n in names]
+        for c in range(V.shape[1]):
+            slices, offset = {}, 0
+            for n, sz in zip(names, sizes):
+                slices[n] = V[offset:offset + sz, c].reshape(shapes[n])
+                offset += sz
+            comp_slices.append(slices)
+        return {
+            "names": names,
+            "shapes": shapes,
+            "variance_share": [float(v / total) for v in var.tolist()],
+            "components": comp_slices,  # component c -> {name: tensor}
+        }
+
     def describe(self) -> str:
         if not self.history:
             return "No merges applied."
