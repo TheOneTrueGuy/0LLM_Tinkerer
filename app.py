@@ -24,6 +24,7 @@ from layer_surgery import LayerSurgeon
 from circuit_tracer_demo import run_circuit_tracer
 from neuron_explorer import NeuronExplorer, NeuronSculptor, neuron_write_column, list_runs
 import session_store
+from weight_space import WeightMerger, MERGE_MODES
 import plotly.graph_objects as go
 
 # Configure logging
@@ -41,6 +42,7 @@ class ModelManager:
         self.weight_inverter = None
         self.layer_surgeon = None
         self.neuron_sculptor = None
+        self.weight_merger = None
         logger.info(f"Using device: {self.device}")
 
     def get_model_structure(self) -> str:
@@ -102,6 +104,7 @@ class ModelManager:
             self.weight_inverter = WeightInverter(self.model)
             self.layer_surgeon = LayerSurgeon(self.model)
             self.neuron_sculptor = None
+            self.weight_merger = WeightMerger(self.model)
             
             # Create architecture visualization (handle None gracefully)
             try:
@@ -1148,6 +1151,48 @@ def create_interface():
         return (msg,) + _loaded_model_updates(
             msg, res["structure"], res["arch_viz"]
         )
+
+    # --- Weight Space: task-vector merges against a reference checkpoint ---
+
+    def _ws():
+        return model_manager.weight_merger
+
+    def ws_load_ref(name):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        return wm.load_reference(name), wm.describe()
+
+    def ws_release_ref():
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        return wm.release_reference(), wm.describe()
+
+    def ws_merge(mode, lam, name_filter):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        r = wm.merge(mode, float(lam), (name_filter or "").strip())
+        if "error" in r:
+            return r["error"], wm.describe()
+        return (
+            f"Merged {r['merged']} params ({r['mode']} lam={r['lam']}) "
+            f"over [{r['filter']}]; {r['skipped_mismatch']} skipped",
+            wm.describe(),
+        )
+
+    def ws_undo():
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        return wm.undo(), wm.describe()
+
+    def ws_generate(prompt, max_len, temp):
+        if not model_manager.model:
+            return "", "Load a model first."
+        out = model_manager.generate_text(prompt, max_len, temp)
+        return out, f"Generated ({'merge applied' if model_manager.weight_merger.has_edits() else 'clean weights'})."
 
     def _as_choice(value):
         if isinstance(value, (list, tuple)):
@@ -2309,6 +2354,44 @@ renderPlot();
                             label="Status", lines=8, interactive=False
                         )
 
+            with gr.TabItem("Weight Space"):
+                gr.Markdown(
+                    "Task-vector arithmetic on weights — stage 1 of Weight Space "
+                    "Modelling. Load a second checkpoint of the **same architecture** "
+                    "and merge: `W + λ·(R−W)` moves the live model toward it, "
+                    "`W − λ·(R−W)` moves away, `soup` averages. Only params with "
+                    "matching name+shape merge; originals are backed up for undo. "
+                    "Composes with inversion, sculpt ops, and steering."
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        ws_ref_name = gr.Textbox(
+                            label="Reference model (name or path)",
+                            placeholder="e.g., distilgpt2 or a saved_model dir",
+                        )
+                        with gr.Row():
+                            ws_load_btn = gr.Button("Load Reference")
+                            ws_release_btn = gr.Button("Release Reference")
+                        ws_mode = gr.Dropdown(
+                            list(MERGE_MODES), value="task_add", label="Merge mode"
+                        )
+                        ws_lam = gr.Slider(-2.0, 2.0, value=1.0, step=0.05, label="λ")
+                        ws_filter = gr.Textbox(
+                            label="Param name filter (optional)",
+                            placeholder="e.g., mlp or transformer.h.3",
+                        )
+                        with gr.Row():
+                            ws_merge_btn = gr.Button("Apply merge", variant="primary")
+                            ws_undo_btn = gr.Button("Undo merge")
+                    with gr.Column(scale=1):
+                        ws_status = gr.Textbox(label="Status", interactive=False)
+                        ws_history = gr.Textbox(
+                            label="Merge history", lines=8, interactive=False
+                        )
+                        ws_prompt = gr.Textbox(label="Prompt", lines=2)
+                        ws_gen_btn = gr.Button("Generate on current weights")
+                        ws_output = gr.Textbox(label="Output", lines=6)
+
         # Set up event handlers
         MODEL_OUTPUTS = [
             model_status,
@@ -2626,6 +2709,19 @@ renderPlot();
             fn=sess_reload,
             inputs=[sess_dropdown, nx_sculpt_prompt],
             outputs=[sess_status] + MODEL_OUTPUTS,
+        )
+
+        # Weight Space event handlers
+        ws_load_btn.click(fn=ws_load_ref, inputs=[ws_ref_name],
+                          outputs=[ws_status, ws_history])
+        ws_release_btn.click(fn=ws_release_ref, outputs=[ws_status, ws_history])
+        ws_merge_btn.click(fn=ws_merge, inputs=[ws_mode, ws_lam, ws_filter],
+                           outputs=[ws_status, ws_history])
+        ws_undo_btn.click(fn=ws_undo, outputs=[ws_status, ws_history])
+        ws_gen_btn.click(
+            fn=ws_generate,
+            inputs=[ws_prompt, max_length, temperature],
+            outputs=[ws_output, ws_status],
         )
 
         # Reflect server-side state in this browser on page load
