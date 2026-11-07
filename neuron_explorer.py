@@ -731,7 +731,8 @@ class NeuronSculptor:
         return cands
 
     def _record(self, kind: str, layer: int, module_name: str,
-                details: str, backups: List[Tuple]) -> Dict[str, Any]:
+                details: str, backups: List[Tuple],
+                spec: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         self._next_id += 1
         op = {
             "id": self._next_id,
@@ -740,6 +741,7 @@ class NeuronSculptor:
             "module": module_name,
             "details": details,
             "backups": backups,
+            "spec": spec or {},
             "ts": time.strftime("%H:%M:%S"),
         }
         self.ops.append(op)
@@ -754,6 +756,8 @@ class NeuronSculptor:
             "scale_write", layer, name,
             f"neuron {neuron} write column ×{factor}",
             [(mod.weight, idx, orig)],
+            spec={"v": 1, "kind": "scale_write", "layer": layer,
+                  "neuron": int(neuron), "factor": float(factor)},
         )
 
     def apply_ablate(self, layer: int, neuron: int) -> Dict[str, Any]:
@@ -765,6 +769,8 @@ class NeuronSculptor:
             "ablate", layer, name,
             f"neuron {neuron} write column zeroed",
             [(mod.weight, idx, orig)],
+            spec={"v": 1, "kind": "ablate", "layer": layer,
+                  "neuron": int(neuron)},
         )
 
     def apply_bias_push(
@@ -794,6 +800,11 @@ class NeuronSculptor:
             "bias_push", layer, name,
             f"neuron {neuron} bias push dose {dose} ({dose_mode}, med {med:.1f})",
             [(mod.bias, slice(None), orig)],
+            # store the resolved magnitude so replay doesn't need the
+            # original calibration prompts
+            spec={"v": 1, "kind": "bias_push", "layer": layer,
+                  "neuron": int(neuron), "abs_magnitude": float(dose) * med,
+                  "dose": float(dose), "dose_mode": dose_mode},
         )
 
     def apply_scale_read(self, layer: int, neuron: int, factor: float) -> Dict[str, Any]:
@@ -812,6 +823,8 @@ class NeuronSculptor:
             "scale_read", layer, ", ".join(names),
             f"neuron {neuron} read row(s) ×{factor} on {len(ups)} module(s)",
             backups,
+            spec={"v": 1, "kind": "scale_read", "layer": layer,
+                  "neuron": int(neuron), "factor": float(factor)},
         )
 
     def undo(self, op_id: Optional[int] = None) -> str:
@@ -841,3 +854,46 @@ class NeuronSculptor:
             f"#{o['id']} {o['kind']} L{o['layer']} {o['module']} — {o['details']} @ {o['ts']}"
             for o in self.ops
         )
+
+    # ---------- persistence: op specs + replay ----------
+
+    def serialize_ops(self) -> List[Dict[str, Any]]:
+        """Serializable spec list for the live op stack (JSON-safe)."""
+        return [dict(o["spec"]) for o in self.ops if o.get("spec")]
+
+    def replay_ops(
+        self,
+        specs: Sequence[Dict[str, Any]],
+        calib_prompts: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        """Re-apply serialized ops in order onto the live model.
+
+        Stop-and-report on first failure (per the plan): returns which specs
+        applied and which one failed with its error.
+        """
+        applied, failed = [], []
+        for spec in specs:
+            try:
+                kind = spec["kind"]
+                layer, neuron = int(spec["layer"]), int(spec["neuron"])
+                if kind == "scale_write":
+                    self.apply_scale_write(layer, neuron, spec["factor"])
+                elif kind == "ablate":
+                    self.apply_ablate(layer, neuron)
+                elif kind == "bias_push":
+                    if "abs_magnitude" in spec:
+                        self.apply_bias_push(layer, neuron, spec["abs_magnitude"], "abs")
+                    else:
+                        self.apply_bias_push(
+                            layer, neuron, spec["dose"],
+                            spec.get("dose_mode", "rel"), calib_prompts,
+                        )
+                elif kind == "scale_read":
+                    self.apply_scale_read(layer, neuron, spec["factor"])
+                else:
+                    raise ValueError(f"unknown op kind {kind!r}")
+                applied.append(spec)
+            except Exception as e:
+                failed.append({"spec": spec, "error": str(e)})
+                break
+        return {"applied": applied, "failed": failed}

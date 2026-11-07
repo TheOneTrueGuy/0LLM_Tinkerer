@@ -23,6 +23,7 @@ from weight_inversion_implementation import WeightInverter
 from layer_surgery import LayerSurgeon
 from circuit_tracer_demo import run_circuit_tracer
 from neuron_explorer import NeuronExplorer, NeuronSculptor, neuron_write_column, list_runs
+import session_store
 import plotly.graph_objects as go
 
 # Configure logging
@@ -419,6 +420,18 @@ def create_interface():
                 empty,
                 empty,
             )
+        # autosave the "last" session so a restart can restore it
+        try:
+            session_store.save_session("last", {
+                "v": 1,
+                "model_name": model_manager.model_name,
+                "use_safetensors": use_safetensors,
+                "gen": {"max_length": 100, "temperature": 0.7},
+                "fingerprint": session_store.config_fingerprint(model_manager.config),
+            })
+            session_store.save_ops("last", [])
+        except Exception as e:
+            logger.warning(f"Could not autosave session: {e}")
         return _loaded_model_updates(
             result["message"], result["structure"], result["arch_viz"]
         )
@@ -989,6 +1002,7 @@ def create_interface():
             o = _nx_sculpt_apply_op(
                 sc, int(layer), int(neuron), op, factor, dose, dose_mode, calib
             )
+            _sess_save_ops("last")
             return f"Applied op #{o['id']}: {o['details']}", sc.describe_ops()
         except Exception as e:
             logger.error(f"Sculpt failed: {e}", exc_info=True)
@@ -998,13 +1012,17 @@ def create_interface():
         sc = _nx_sculptor()
         if sc is None:
             return "Load a model first.", ""
-        return sc.undo(), sc.describe_ops()
+        msg = sc.undo()
+        _sess_save_ops("last")
+        return msg, sc.describe_ops()
 
     def nx_sculpt_undo_all():
         sc = _nx_sculptor()
         if sc is None:
             return "Load a model first.", ""
-        return sc.undo_all(), sc.describe_ops()
+        msg = sc.undo_all()
+        _sess_save_ops("last")
+        return msg, sc.describe_ops()
 
     def nx_sculpt_compare(layer, neuron, op, factor, dose, dose_mode,
                           prompt, keep, max_new, temperature):
@@ -1052,6 +1070,84 @@ def create_interface():
         except Exception as e:
             logger.error(f"Sculpt compare failed: {e}", exc_info=True)
             return "", "", f"Compare failed: {e}", sc.describe_ops()
+
+    # --- Session persistence: save/restore model + op stack ---
+
+    def _sess_save_ops(name: str) -> int:
+        sc = model_manager.neuron_sculptor
+        specs = sc.serialize_ops() if sc else []
+        session_store.save_ops(name, specs)
+        return len(specs)
+
+    def sess_save(name, m_name, use_sf, max_len, temp):
+        if not model_manager.model:
+            return "No model loaded.", gr.update()
+        name = (name or "").strip() or "last"
+        try:
+            session_store.save_session(name, {
+                "v": 1,
+                "model_name": m_name or model_manager.model_name,
+                "use_safetensors": bool(use_sf),
+                "gen": {"max_length": max_len, "temperature": temp},
+                "fingerprint": session_store.config_fingerprint(model_manager.config),
+            })
+            n = _sess_save_ops(name)
+            return (
+                f"Saved session '{name}' ({n} ops).",
+                gr.update(choices=session_store.list_sessions(), value=name),
+            )
+        except Exception as e:
+            return f"Save failed: {e}", gr.update()
+
+    def sess_load_fields(name):
+        s = session_store.load_session(name) if name else None
+        if not s:
+            return "No such session.", *(gr.update() for _ in range(4))
+        gen = s.get("gen", {})
+        n_ops = len(session_store.load_ops(name))
+        return (
+            f"Session '{name}': model {s.get('model_name')} "
+            f"(saved {s.get('saved_at', '?')}), {n_ops} ops stored",
+            s.get("model_name", gr.update()),
+            s.get("use_safetensors", gr.update()),
+            gen.get("max_length", gr.update()),
+            gen.get("temperature", gr.update()),
+        )
+
+    def sess_reload(name, calib_prompt):
+        noop = (gr.update(),) * len(MODEL_OUTPUTS)
+        s = session_store.load_session(name) if name else None
+        if not s or not s.get("model_name"):
+            return ("No session to reload.",) + noop
+        res = model_manager.load_model(
+            s["model_name"], s.get("use_safetensors", True)
+        )
+        if res["status"] == "error":
+            return (res["message"],) + noop
+        warn = ""
+        mism = session_store.fingerprint_matches(
+            session_store.config_fingerprint(model_manager.config),
+            s.get("fingerprint", {}),
+        )
+        if mism:
+            warn = f" Warning: config differs on {mism}."
+        specs = session_store.load_ops(name)
+        rep = {"applied": [], "failed": []}
+        if specs:
+            sc = _nx_sculptor()
+            rep = sc.replay_ops(
+                specs, [calib_prompt] if (calib_prompt or "").strip() else None
+            )
+        msg = (
+            f"Reloaded {s['model_name']}; replayed "
+            f"{len(rep['applied'])}/{len(specs)} ops."
+        )
+        if rep["failed"]:
+            msg += f" First failure: {rep['failed'][0]['error']}"
+        msg += warn
+        return (msg,) + _loaded_model_updates(
+            msg, res["structure"], res["arch_viz"]
+        )
 
     def _as_choice(value):
         if isinstance(value, (list, tuple)):
@@ -2186,6 +2282,33 @@ renderPlot();
                             )
                             nx_cmp_b = gr.Textbox(label="Weight-edited", lines=6)
 
+            with gr.TabItem("Session"):
+                gr.Markdown(
+                    "Save and restore a session: model name, generation params, and "
+                    "the sculpt op stack. Ops are stored as serializable specs "
+                    "(`sessions/<name>.ops.jsonl`) and **replayed in order** on reload — "
+                    "never a weights snapshot. `last` is autosaved on every successful "
+                    "model load."
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        sess_name = gr.Textbox(label="Session name", value="last")
+                        sess_dropdown = gr.Dropdown(
+                            label="Saved sessions",
+                            choices=session_store.list_sessions(),
+                            allow_custom_value=True,
+                        )
+                        with gr.Row():
+                            sess_save_btn = gr.Button("Save session", variant="primary")
+                            sess_fields_btn = gr.Button("Load fields only")
+                            sess_reload_btn = gr.Button(
+                                "Reload model + replay ops", variant="primary"
+                            )
+                    with gr.Column(scale=1):
+                        sess_status = gr.Textbox(
+                            label="Status", lines=8, interactive=False
+                        )
+
         # Set up event handlers
         MODEL_OUTPUTS = [
             model_status,
@@ -2488,8 +2611,29 @@ renderPlot();
             outputs=[nx_cmp_a, nx_cmp_b, nx_sculpt_status, nx_sculpt_log],
         )
 
+        # Session persistence event handlers
+        sess_save_btn.click(
+            fn=sess_save,
+            inputs=[sess_name, model_name, use_safetensors, max_length, temperature],
+            outputs=[sess_status, sess_dropdown],
+        )
+        sess_fields_btn.click(
+            fn=sess_load_fields,
+            inputs=[sess_dropdown],
+            outputs=[sess_status, model_name, use_safetensors, max_length, temperature],
+        )
+        sess_reload_btn.click(
+            fn=sess_reload,
+            inputs=[sess_dropdown, nx_sculpt_prompt],
+            outputs=[sess_status] + MODEL_OUTPUTS,
+        )
+
         # Reflect server-side state in this browser on page load
         interface.load(fn=refresh_ui_state, outputs=MODEL_OUTPUTS)
+        interface.load(
+            fn=lambda: gr.update(choices=session_store.list_sessions()),
+            outputs=[sess_dropdown],
+        )
 
     return interface
 
