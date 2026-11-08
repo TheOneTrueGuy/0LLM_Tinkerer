@@ -1727,7 +1727,7 @@ def create_interface():
                     value="gpt2"
                 )
                 cached_models = gr.Dropdown(
-                    label="Cached / local models (pick to fill name above)",
+                    label="...or pick from models already on disk (fills name above)",
                     choices=_cached_model_names(),
                     interactive=True,
                     allow_custom_value=True,
@@ -2458,7 +2458,7 @@ renderPlot();
                             placeholder="e.g., distilgpt2 or a saved_model dir",
                         )
                         ws_ref_pick = gr.Dropdown(
-                            label="Cached / local models",
+                            label="...or pick from models already on disk (fills field above)",
                             choices=_cached_model_names(),
                             interactive=True,
                             allow_custom_value=True,
