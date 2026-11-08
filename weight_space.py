@@ -35,6 +35,12 @@ class WeightMerger:
         self.ref_name: Optional[str] = None
         self._backup: Dict[str, torch.Tensor] = {}
         self.history: List[Dict[str, Any]] = []
+        # stage-2 ensemble state
+        self.delta_sets: List[Dict[str, Any]] = []
+        self._baseline: Optional[Dict[str, torch.Tensor]] = None
+        self._baseline_filter: str = ""
+        self._basis: Optional[Dict[str, Any]] = None
+        self._latent_anchor: Optional[Dict[str, torch.Tensor]] = None
 
     # ---------- reference checkpoint ----------
 
@@ -176,17 +182,25 @@ class WeightMerger:
         """
         if len(delta_sets) < 2:
             return {"error": "Need at least 2 delta sets for a basis."}
+        # union of names — a param absent from a set is a zero delta there
+        shapes = {}
+        for d in delta_sets:
+            for n, t in d.items():
+                shapes.setdefault(n, tuple(t.shape))
         names = [
-            n for n in delta_sets[0]
-            if all(n in d and d[n].shape == delta_sets[0][n].shape for d in delta_sets[1:])
+            n for n in shapes
+            if all(tuple(d[n].shape) == shapes[n] for d in delta_sets if n in d)
         ]
         if not names:
-            return {"error": "No common parameter names across delta sets."}
-        rows, shapes = [], {}
+            return {"error": "No parameter names across delta sets."}
+        rows = []
         for d in delta_sets:
-            rows.append(torch.cat([d[n].flatten().float() for n in names]))
-        for n in names:
-            shapes[n] = tuple(delta_sets[0][n].shape)
+            rows.append(torch.cat([
+                d[n].flatten().float() if n in d
+                else torch.zeros(int(torch.tensor(shapes[n]).prod()))
+                for n in names
+            ]))
+        mean_delta_norm = float(torch.stack(rows).norm(dim=1).mean())
         X = torch.stack(rows)
         X = X - X.mean(dim=0, keepdim=True)
         _, S, V = torch.pca_lowrank(X, q=min(n_components, X.shape[0] - 1, X.shape[1]))
@@ -207,7 +221,180 @@ class WeightMerger:
             "shapes": shapes,
             "variance_share": [float(v / total) for v in var.tolist()],
             "components": comp_slices,  # component c -> {name: tensor}
+            "mean_delta_norm": mean_delta_norm,
         }
+
+    # ---------- delta ensembles (stage 2) ----------
+
+    def set_baseline(self, name_filter: str = "") -> str:
+        """Capture current weights (matching filter) as the ensemble baseline.
+        Clears any recorded delta sets."""
+        if self.model is None:
+            return "Load a base model first."
+        self._baseline = {
+            n: p.data.detach().clone()
+            for n, p in self.model.named_parameters()
+            if not name_filter or name_filter in n
+        }
+        if not self._baseline:
+            return f"Baseline is empty — no params match '{name_filter}'."
+        self._baseline_filter = name_filter
+        self.delta_sets = []
+        self._basis = None
+        self._latent_anchor = None
+        return (
+            f"Baseline set: {len(self._baseline)} params "
+            f"[{name_filter or 'all'}]. Delta sets cleared."
+        )
+
+    def add_delta_set(self, label: str = "") -> str:
+        """Record (current weights - baseline) for baseline params as a delta
+        set. Apply a weight-editing op first; structural changes (inserted or
+        removed layers) simply won't match baseline names."""
+        if self._baseline is None:
+            return "Set a baseline first."
+        live = dict(self.model.named_parameters())
+        delta = {}
+        with torch.no_grad():
+            for n, b in self._baseline.items():
+                p = live.get(n)
+                if p is not None and p.shape == b.shape:
+                    d = (p.data - b).float().cpu()
+                    if float(d.abs().max()) > 0:
+                        delta[n] = d
+        if not delta:
+            return "No changed params vs baseline — apply a weight edit first."
+        label = label or f"set{len(self.delta_sets)}"
+        self.delta_sets.append({"label": label, "delta": delta})
+        self._basis = None
+        return (
+            f"Recorded '{label}': {len(delta)} changed params. "
+            f"{len(self.delta_sets)} sets total."
+        )
+
+    def clear_delta_sets(self) -> str:
+        self.delta_sets = []
+        self._basis = None
+        return "Delta sets cleared."
+
+    def auto_ensemble(self, k: int = 6, edits_per_set: int = 3,
+                      name_filter: Optional[str] = None,
+                      seed: int = 0) -> str:
+        """Auto-generate K delta sets via structured edits: for each set, pick
+        ``edits_per_set`` random >=2D params and rescale a random slice along
+        the last dim (like a neuron scale_write). Each variant is snapshotted
+        then exactly restored — structured deltas give the basis real
+        directions instead of isotropic noise."""
+        import random
+
+        if self._baseline is None:
+            msg = self.set_baseline(name_filter or "")
+            if "empty" in msg or "first" in msg:
+                return msg
+        rnd = random.Random(seed)
+        live = dict(self.model.named_parameters())
+        cand = [
+            n for n, b in self._baseline.items()
+            if n in live and live[n].dim() >= 2
+            and live[n].shape == b.shape
+        ]
+        if not cand:
+            return "No eligible >=2D params for auto-ensemble."
+        made = 0
+        for i in range(k):
+            picks = rnd.sample(cand, min(edits_per_set, len(cand)))
+            touched, desc = {}, []
+            with torch.no_grad():
+                for n in picks:
+                    p = live[n]
+                    j = rnd.randrange(p.shape[-1])
+                    factor = rnd.uniform(0.0, 2.0)
+                    touched[n] = (j, p.data[..., j].clone())
+                    p.data[..., j].mul_(factor)
+                    desc.append(f"{'.'.join(n.split('.')[-4:])}[{j}]x{factor:.2f}")
+                r = self.add_delta_set(f"auto{i}: " + "; ".join(desc))
+                for n, (j, orig) in touched.items():
+                    live[n].data[..., j].copy_(orig)
+            if "Recorded" in r:
+                made += 1
+        return f"Auto ensemble: {made}/{k} sets recorded ({len(cand)} candidate params)."
+
+    def compute_basis(self, n_components: int = 8) -> Dict[str, Any]:
+        if len(self.delta_sets) < 2:
+            return {"error": "Need at least 2 delta sets — record or auto-generate."}
+        r = self.latent_basis([s["delta"] for s in self.delta_sets], n_components)
+        if "error" not in r:
+            self._basis = r
+            self._latent_anchor = None
+        return r
+
+    def apply_component(self, comp_idx: int, scale: float) -> str:
+        """One-shot add of ``scale * PC[comp_idx]`` — accumulates. For
+        slider-driven control prefer ``set_component_mix`` (idempotent)."""
+        return self._apply_mix({int(comp_idx): float(scale)},
+                               incremental=True)
+
+    def set_component_mix(self, scales: List[float]) -> str:
+        """Set absolute PC slider positions — idempotent: writes
+        ``W = anchor + Σ s_i · mean_delta_norm · PC_i`` where anchor is the
+        weights captured on the first mix call. scale 1.0 ≈ one typical
+        delta-set magnitude. Touched params join the merge backup so Undo
+        fully restores."""
+        return self._apply_mix({i: float(s) for i, s in enumerate(scales)},
+                               incremental=False)
+
+    def _apply_mix(self, scale_map: Dict[int, float],
+                   incremental: bool) -> str:
+        if not self._basis:
+            return "Compute a basis first."
+        comps = self._basis["components"]
+        norm = self._basis.get("mean_delta_norm", 1.0)
+        live = dict(self.model.named_parameters())
+
+        if not incremental and self._latent_anchor is None:
+            self._latent_anchor = {
+                n: live[n].data.clone() for n in self._basis["names"]
+                if n in live and live[n].shape == self._basis["shapes"][n]
+            }
+
+        with torch.no_grad():
+            if not incremental:
+                for n, a in self._latent_anchor.items():
+                    if n in live and live[n].shape == a.shape:
+                        live[n].data.copy_(a)
+            applied = 0
+            for idx, s in scale_map.items():
+                if not 0 <= idx < len(comps) or s == 0:
+                    continue
+                for n, comp in comps[idx].items():
+                    p = live.get(n)
+                    if p is None or p.shape != comp.shape:
+                        continue
+                    if n not in self._backup:
+                        self._backup[n] = p.data.clone()
+                    p.data += s * norm * comp.to(p.data.dtype)
+                    applied += 1
+        desc = ", ".join(f"PC{i}x{s:g}" for i, s in scale_map.items() if s)
+        self.history.append({
+            "mode": "latent_mix" if not incremental else "latent_pc",
+            "lam": norm, "ref": desc, "params": applied, "filter": "",
+        })
+        return f"Applied [{desc}] (norm={norm:.4g}) to {applied} param-slices (undo restores)."
+
+    def basis_summary(self) -> str:
+        if not self._basis:
+            return "No basis computed."
+        shares = self._basis["variance_share"]
+        line = "  ".join(f"PC{i}:{s * 100:.1f}%" for i, s in enumerate(shares))
+        return f"{len(self._basis['names'])} shared params\n{line}"
+
+    def sets_summary(self) -> str:
+        if not self.delta_sets:
+            return "No delta sets recorded."
+        return "\n".join(
+            f"{i}: {s['label']} ({len(s['delta'])} params)"
+            for i, s in enumerate(self.delta_sets)
+        )
 
     def describe(self) -> str:
         if not self.history:

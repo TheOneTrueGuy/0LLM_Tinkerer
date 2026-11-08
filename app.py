@@ -1194,6 +1194,49 @@ def create_interface():
         out = model_manager.generate_text(prompt, max_len, temp)
         return out, f"Generated ({'merge applied' if model_manager.weight_merger.has_edits() else 'clean weights'})."
 
+    # --- Weight Space: delta ensembles + latent basis (WSL stage 2) ---
+
+    def ws_set_baseline(name_filter):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        return wm.set_baseline((name_filter or "").strip()), wm.sets_summary()
+
+    def ws_add_delta(label):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        return wm.add_delta_set((label or "").strip()), wm.sets_summary()
+
+    def ws_auto(k, edits, name_filter):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        msg = wm.auto_ensemble(int(k), int(edits),
+                               (name_filter or "").strip() or None)
+        return msg, wm.sets_summary()
+
+    def ws_clear_sets():
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        return wm.clear_delta_sets(), wm.sets_summary()
+
+    def ws_compute_basis(n_comp):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        r = wm.compute_basis(int(n_comp))
+        if "error" in r:
+            return r["error"], wm.sets_summary()
+        return wm.basis_summary(), wm.sets_summary()
+
+    def ws_set_mix(*scales):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        return wm.set_component_mix(list(scales)), wm.describe()
+
     def _as_choice(value):
         if isinstance(value, (list, tuple)):
             return value[0] if value else None
@@ -2392,6 +2435,56 @@ renderPlot();
                         ws_gen_btn = gr.Button("Generate on current weights")
                         ws_output = gr.Textbox(label="Output", lines=6)
 
+                with gr.Accordion(
+                    "Latent basis — delta ensembles & principal components",
+                    open=False,
+                ):
+                    gr.Markdown(
+                        "**WSL stage 2.** Set a baseline, then collect weight deltas: "
+                        "apply any weight-editing op and **Record delta set**, or "
+                        "auto-generate structured edits. Compute a PCA basis over the "
+                        "sets, then apply `scale × PC` as a latent-space edit. "
+                        "Undo via *Undo merge* above. A param filter (e.g. `mlp`) "
+                        "keeps ensembles small and PCA fast."
+                    )
+                    with gr.Row():
+                        ws_ens_filter = gr.Textbox(
+                            label="Param filter",
+                            placeholder="e.g., mlp (empty = all params)",
+                            scale=2,
+                        )
+                        ws_set_base_btn = gr.Button("Set baseline")
+                        ws_label = gr.Textbox(label="Set label", scale=1)
+                        ws_add_set_btn = gr.Button("Record delta set")
+                    with gr.Row():
+                        ws_auto_k = gr.Slider(2, 20, value=6, step=1,
+                                              label="Auto sets")
+                        ws_auto_edits = gr.Slider(1, 10, value=3, step=1,
+                                                  label="Edits per set")
+                        ws_auto_btn = gr.Button("Auto-generate ensemble")
+                        ws_clear_sets_btn = gr.Button("Clear sets")
+                    ws_sets = gr.Textbox(label="Delta sets", lines=6,
+                                         interactive=False)
+                    with gr.Row():
+                        ws_ncomp = gr.Slider(1, 16, value=8, step=1,
+                                             label="Components")
+                        ws_basis_btn = gr.Button("Compute basis")
+                        ws_basis_out = gr.Textbox(label="Basis", lines=3,
+                                                  interactive=False, scale=2)
+                    gr.Markdown(
+                        "**PC sliders** — each position sets an absolute mix "
+                        "(`W = anchor + Σ sᵢ·PCᵢ`); scale 1.0 ≈ one typical "
+                        "delta magnitude. Drag back to 0 to remove a component."
+                    )
+                    ws_pc_sliders = []
+                    for row in range(2):
+                        with gr.Row():
+                            for c in range(4):
+                                ws_pc_sliders.append(gr.Slider(
+                                    -3.0, 3.0, value=0.0, step=0.05,
+                                    label=f"PC{row * 4 + c}",
+                                ))
+
         # Set up event handlers
         MODEL_OUTPUTS = [
             model_status,
@@ -2723,6 +2816,21 @@ renderPlot();
             inputs=[ws_prompt, max_length, temperature],
             outputs=[ws_output, ws_status],
         )
+        ws_set_base_btn.click(fn=ws_set_baseline, inputs=[ws_ens_filter],
+                              outputs=[ws_status, ws_sets])
+        ws_add_set_btn.click(fn=ws_add_delta, inputs=[ws_label],
+                             outputs=[ws_status, ws_sets])
+        ws_auto_btn.click(
+            fn=ws_auto,
+            inputs=[ws_auto_k, ws_auto_edits, ws_ens_filter],
+            outputs=[ws_status, ws_sets],
+        )
+        ws_clear_sets_btn.click(fn=ws_clear_sets, outputs=[ws_status, ws_sets])
+        ws_basis_btn.click(fn=ws_compute_basis, inputs=[ws_ncomp],
+                           outputs=[ws_basis_out, ws_sets])
+        for s in ws_pc_sliders:
+            s.release(fn=ws_set_mix, inputs=ws_pc_sliders,
+                      outputs=[ws_status, ws_history])
 
         # Reflect server-side state in this browser on page load
         interface.load(fn=refresh_ui_state, outputs=MODEL_OUTPUTS)
