@@ -1187,6 +1187,12 @@ def create_interface():
             return "Load a base model first.", ""
         return wm.load_reference(name), wm.describe()
 
+    def ws_check(ref_name):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first.", ""
+        return wm.check_compatibility((ref_name or "").strip()), wm.describe()
+
     def ws_release_ref():
         wm = _ws()
         if wm is None:
@@ -2449,6 +2455,7 @@ renderPlot();
                             allow_custom_value=True,
                         )
                         with gr.Row():
+                            ws_check_btn = gr.Button("Check compat")
                             ws_load_btn = gr.Button("Load Reference")
                             ws_release_btn = gr.Button("Release Reference")
                         ws_mode = gr.Dropdown(
@@ -2841,6 +2848,8 @@ renderPlot();
         )
 
         # Weight Space event handlers
+        ws_check_btn.click(fn=ws_check, inputs=[ws_ref_name],
+                           outputs=[ws_status, ws_history])
         ws_load_btn.click(fn=ws_load_ref, inputs=[ws_ref_name],
                           outputs=[ws_status, ws_history])
         ws_release_btn.click(fn=ws_release_ref, outputs=[ws_status, ws_history])

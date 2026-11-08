@@ -77,6 +77,56 @@ class WeightMerger:
 
     # ---------- merging ----------
 
+    @staticmethod
+    def _config_sig(c) -> Dict[str, Any]:
+        """Normalized dimension signature across HF config field names."""
+        def get(*keys):
+            return next(
+                (getattr(c, k) for k in keys if getattr(c, k, None) is not None),
+                None,
+            )
+        return {
+            "model_type": getattr(c, "model_type", None),
+            "layers": get("n_layer", "num_hidden_layers"),
+            "hidden": get("n_embd", "hidden_size", "d_model"),
+            "heads": get("n_head", "num_attention_heads"),
+            "intermediate": get("n_inner", "intermediate_size"),
+            "vocab": get("vocab_size"),
+        }
+
+    def check_compatibility(self, ref_name: str) -> str:
+        """Fetch ONLY the reference config (~1KB, no weights) and estimate
+        merge coverage against the live model."""
+        from transformers import AutoConfig
+
+        if self.model is None:
+            return "Load a base model first."
+        try:
+            rc = AutoConfig.from_pretrained(ref_name)
+        except Exception as e:
+            return f"Could not fetch config for '{ref_name}': {e}"
+        ls = self._config_sig(self.model.config)
+        rs = self._config_sig(rc)
+        lines = [f"{'field':<13} {'live':>8} {'ref':>8}"]
+        diffs = []
+        for k in ls:
+            mark = " " if ls[k] == rs[k] else "*"
+            lines.append(f"{mark}{k:<12} {str(ls[k]):>8} {str(rs[k]):>8}")
+            if ls[k] != rs[k]:
+                diffs.append(k)
+        if ls["model_type"] != rs["model_type"]:
+            verdict = "INCOMPATIBLE — different architecture family; ~0 params would merge."
+        elif diffs:
+            verdict = (
+                f"PARTIAL at best — same family but {', '.join(diffs)} differ; "
+                "only identically-shaped tensors merge."
+            )
+        else:
+            verdict = "COMPATIBLE — identical dims; expect a full merge."
+        return "\n".join(lines) + "\n" + verdict
+
+
+
     def _shared_params(self) -> Tuple[List[Tuple[str, torch.Tensor, torch.Tensor]], int]:
         """(name, live_param, ref_param) for matching names+shapes; + skip count."""
         if self.ref_model is None:
