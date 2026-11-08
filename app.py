@@ -439,6 +439,30 @@ def create_interface():
             result["message"], result["structure"], result["arch_viz"]
         )
 
+    def _cached_model_names():
+        """Models already on disk: HF hub cache entries plus local dirs that
+        look like saved checkpoints (config.json + weights)."""
+        import os
+        names = []
+        hub = os.environ.get("HF_HUB_CACHE") or os.path.join(
+            os.path.expanduser("~"), ".cache", "huggingface", "hub")
+        try:
+            for d in os.listdir(hub):
+                if d.startswith("models--"):
+                    names.append(d[len("models--"):].replace("--", "/"))
+        except OSError:
+            pass
+        try:
+            for d in os.listdir("."):
+                p = os.path.join(".", d)
+                if os.path.isdir(p) and os.path.exists(os.path.join(p, "config.json")):
+                    if any(f.endswith((".safetensors", ".bin"))
+                           or "index.json" in f for f in os.listdir(p)):
+                        names.append(d)
+        except OSError:
+            pass
+        return sorted(names)
+
     def refresh_ui_state():
         """Page-load refresh: reflect the server-side model (which may already
         be loaded via another session or the API) in this browser's widgets."""
@@ -1687,6 +1711,12 @@ def create_interface():
                     placeholder="Enter HuggingFace model name (e.g., 'gpt2')",
                     value="gpt2"
                 )
+                cached_models = gr.Dropdown(
+                    label="Cached / local models (pick to fill name above)",
+                    choices=_cached_model_names(),
+                    interactive=True,
+                    allow_custom_value=True,
+                )
                 use_safetensors = gr.Checkbox(
                     label="Use safetensors (if available)",
                     value=True
@@ -2412,6 +2442,12 @@ renderPlot();
                             label="Reference model (name or path)",
                             placeholder="e.g., distilgpt2 or a saved_model dir",
                         )
+                        ws_ref_pick = gr.Dropdown(
+                            label="Cached / local models",
+                            choices=_cached_model_names(),
+                            interactive=True,
+                            allow_custom_value=True,
+                        )
                         with gr.Row():
                             ws_load_btn = gr.Button("Load Reference")
                             ws_release_btn = gr.Button("Release Reference")
@@ -2831,6 +2867,17 @@ renderPlot();
         for s in ws_pc_sliders:
             s.release(fn=ws_set_mix, inputs=ws_pc_sliders,
                       outputs=[ws_status, ws_history])
+
+        # Cached-model pickers fill their textboxes
+        cached_models.change(fn=lambda v: v, inputs=cached_models,
+                             outputs=model_name)
+        ws_ref_pick.change(fn=lambda v: v, inputs=ws_ref_pick,
+                           outputs=ws_ref_name)
+        interface.load(
+            fn=lambda: (gr.update(choices=_cached_model_names()),
+                        gr.update(choices=_cached_model_names())),
+            outputs=[cached_models, ws_ref_pick],
+        )
 
         # Reflect server-side state in this browser on page load
         interface.load(fn=refresh_ui_state, outputs=MODEL_OUTPUTS)
