@@ -1181,17 +1181,26 @@ def create_interface():
     def _ws():
         return model_manager.weight_merger
 
-    def ws_load_ref(name):
+    def ws_load_ref(name, pick):
         wm = _ws()
         if wm is None:
             return "Load a base model first.", ""
+        name = _ref_name(name, pick)
+        if not name:
+            return "Enter a reference model name or pick one from the list.", wm.describe()
         return wm.load_reference(name), wm.describe()
 
-    def ws_check(ref_name):
+    def _ref_name(text, pick):
+        return (text or "").strip() or (pick or "").strip()
+
+    def ws_check(ref_name, pick):
         wm = _ws()
         if wm is None:
             return "Load a base model first.", ""
-        return wm.check_compatibility((ref_name or "").strip()), wm.describe()
+        name = _ref_name(ref_name, pick)
+        if not name:
+            return "Enter a reference model name or pick one from the list.", wm.describe()
+        return wm.check_compatibility(name), wm.describe()
 
     def ws_release_ref():
         wm = _ws()
@@ -2848,9 +2857,9 @@ renderPlot();
         )
 
         # Weight Space event handlers
-        ws_check_btn.click(fn=ws_check, inputs=[ws_ref_name],
+        ws_check_btn.click(fn=ws_check, inputs=[ws_ref_name, ws_ref_pick],
                            outputs=[ws_status, ws_history])
-        ws_load_btn.click(fn=ws_load_ref, inputs=[ws_ref_name],
+        ws_load_btn.click(fn=ws_load_ref, inputs=[ws_ref_name, ws_ref_pick],
                           outputs=[ws_status, ws_history])
         ws_release_btn.click(fn=ws_release_ref, outputs=[ws_status, ws_history])
         ws_merge_btn.click(fn=ws_merge, inputs=[ws_mode, ws_lam, ws_filter],
