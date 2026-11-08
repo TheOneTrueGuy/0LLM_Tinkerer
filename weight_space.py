@@ -196,6 +196,31 @@ class WeightMerger:
                     out[name] = (r.data - p.data).float().cpu()
         return out
 
+    def sweep_lambda(
+        self,
+        mode: str,
+        lambdas: List[float],
+        generate_fn=None,
+        prompt: str = "",
+        name_filter: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Sweep λ: for each value, restore baseline weights, merge at that λ,
+        optionally generate via ``generate_fn(prompt)``. Leaves the model at
+        baseline (fully undone) when done — the sweep is non-destructive."""
+        results = []
+        for lam in lambdas:
+            self.undo()  # restore to pre-merge state
+            r = self.merge(mode, float(lam), name_filter)
+            if "error" in r:
+                results.append({"lam": lam, "error": r["error"]})
+                continue
+            out = generate_fn(prompt) if (generate_fn and prompt) else ""
+            results.append({
+                "lam": lam, "merged": r["merged"], "output": out,
+            })
+        self.undo()
+        return results
+
     # ---------- undo ----------
 
     def undo(self) -> str:

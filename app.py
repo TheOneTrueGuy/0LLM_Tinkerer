@@ -1270,6 +1270,32 @@ def create_interface():
             return r["error"], wm.sets_summary()
         return wm.basis_summary(), wm.sets_summary()
 
+    def ws_sweep(mode, lambdas_text, prompt, name_filter):
+        wm = _ws()
+        if wm is None:
+            return "Load a base model first."
+        try:
+            lams = [float(x) for x in
+                    (lambdas_text or "").replace(",", " ").split() if x]
+        except ValueError:
+            return "λ list must be numbers separated by spaces/commas."
+        if not lams:
+            return "Enter at least one λ value."
+        def gen(p):
+            return model_manager.generate_text(p, 40, 0.7)
+        results = wm.sweep_lambda(
+            mode, lams, generate_fn=gen, prompt=prompt,
+            name_filter=(name_filter or "").strip())
+        lines = []
+        for r in results:
+            if "error" in r:
+                lines.append(f"λ={r['lam']}: {r['error']}")
+            else:
+                out = (r["output"] or "").replace("\n", " ")
+                lines.append(f"λ={r['lam']}: {out[:120]}")
+        lines.append("(model restored to baseline)")
+        return "\n\n".join(lines)
+
     def ws_set_mix(*scales):
         wm = _ws()
         if wm is None:
@@ -2486,6 +2512,22 @@ renderPlot();
                         ws_prompt = gr.Textbox(label="Prompt", lines=2)
                         ws_gen_btn = gr.Button("Generate on current weights")
                         ws_output = gr.Textbox(label="Output", lines=6)
+                        with gr.Accordion(
+                            "λ sweep — degradation curve", open=False
+                        ):
+                            gr.Markdown(
+                                "Non-destructive: restores baseline, merges at each "
+                                "λ, generates, and restores at the end. Shows how "
+                                "behavior changes across the merge path."
+                            )
+                            ws_sweep_lams = gr.Textbox(
+                                label="λ values",
+                                value="0 0.25 0.45 0.6 0.75 1.0",
+                            )
+                            ws_sweep_btn = gr.Button("Run λ sweep")
+                            ws_sweep_out = gr.Textbox(
+                                label="Outputs per λ", lines=10, interactive=False
+                            )
 
                 with gr.Accordion(
                     "Latent basis — delta ensembles & principal components",
@@ -2865,6 +2907,11 @@ renderPlot();
         ws_merge_btn.click(fn=ws_merge, inputs=[ws_mode, ws_lam, ws_filter],
                            outputs=[ws_status, ws_history])
         ws_undo_btn.click(fn=ws_undo, outputs=[ws_status, ws_history])
+        ws_sweep_btn.click(
+            fn=ws_sweep,
+            inputs=[ws_mode, ws_sweep_lams, ws_prompt, ws_filter],
+            outputs=[ws_sweep_out],
+        )
         ws_gen_btn.click(
             fn=ws_generate,
             inputs=[ws_prompt, max_length, temperature],
