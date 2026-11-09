@@ -27,6 +27,27 @@ RunPod GPU pod. Built with Gradio and PyTorch/transformers.
   sublayers (whole `mlp`/`attn` or single tensors), including identity and
   noisy-copy inits
 
+**Weight Space** (task-vector arithmetic + latent basis — early Weight Space
+Modelling)
+
+- Merge: load a second checkpoint of the same architecture and apply
+  `W + λ·(R−W)` (toward it), `W − λ·(R−W)` (away), or a soup average, with
+  an optional param-name filter; mismatched tensors are skipped
+- Check compat: compares config dims (~1KB fetch, no weights) and predicts
+  merge coverage before downloading
+- λ sweep: non-destructive degradation curve — restores baseline, merges at
+  each λ, generates, and restores at the end
+- Latent basis: collect weight deltas vs a baseline (any weight-editing op,
+  or auto-generated structured edits), run PCA, then drive the model with
+  **PC sliders** — each slider sets an absolute mix `W = anchor + Σ sᵢ·PCᵢ`
+- All merges/mixes are undoable through the same backup→apply→restore path
+
+**Persistence**
+
+- Session tab: save named sessions (model, params, sculpt op specs) to
+  `sessions/*.json`, reload the model and replay ops on restart; `last`
+  autosaves on every load and sculpt apply/undo
+
 **Neuron Explorer** (steering-first, after
 [lyramakesmusic/neuron-explorer](https://github.com/lyramakesmusic/neuron-explorer))
 
@@ -60,6 +81,15 @@ RunPod GPU pod. Built with Gradio and PyTorch/transformers.
   op log
 - **Scale up on demand**: run sweeps or big models on a RunPod pod from the
   same UI, pull results back, and terminate billing when done
+- **Merge models as vectors**: blend a checkpoint toward/away from a
+  reference and sweep λ to see where behavior breaks — a cheap probe of how
+  compatible two weight spaces are (same-base finetunes merge cleanly;
+  different-basin models degrade in interesting ways)
+- **Edit in latent space**: build a delta ensemble from your own edits
+  (sculpts, merges, jitters), compute a PCA basis, and mix principal
+  components with sliders instead of touching individual tensors
+- **Pick up where you left off**: sessions autosave as `last` — restart the
+  app, reload the model, replay your ops
 - **Follow the research trail**: steering-first neuron interpretation
   ([neuron-explorer](https://github.com/lyramakesmusic/neuron-explorer)) and
   circuit attribution ([circuit-tracer](https://github.com/safety-research/circuit-tracer))
@@ -92,7 +122,10 @@ python app.py
 
 2. Open your browser and navigate to the URL shown in the terminal (typically http://localhost:7860)
 
-3. Enter a HuggingFace model name (e.g., 'gpt2', 'facebook/opt-125m')
+3. Enter a HuggingFace model name (e.g., 'gpt2', 'facebook/opt-125m'), a
+   local model directory (e.g. `saved_model`), or pick one from the
+   **cached/local models** dropdown — anything already in your HF cache or
+   saved on disk works, no re-download
 4. Click "Load Model" to load the model — the page also reflects a model
    already loaded server-side (e.g. from another session)
 5. Pick a tab and start tinkering. Suggested first run: **Neuron Explorer →
@@ -116,6 +149,10 @@ All model outputs are saved to `outputs.jsonl`:
 
 Neuron sweep rollouts are saved incrementally to `neuron_runs/<name>.jsonl`
 and are browsable even while a sweep is running.
+
+Sessions live in `sessions/<name>.json` (model name, generation params,
+config fingerprint) plus `<name>.ops.jsonl` (serializable op specs, replayed
+in order on reload). Structural surgery is not yet serialized.
 
 ## RunPod Tinker
 
@@ -183,9 +220,11 @@ The demo auto-detects `circuit_venv/Scripts/circuit-tracer.exe`, or set
 - `app.py` — Gradio UI and ModelManager
 - `neuron_explorer.py` — `NeuronExplorer` (steering, sweeps, ranking,
   activations) and `NeuronSculptor` (undoable weight edits)
+- `weight_space.py` — `WeightMerger` (task-vector merges, λ sweeps, delta
+  ensembles, PCA latent basis, PC-slider edits)
+- `session_store.py` — session files + op-spec persistence
 - `layer_surgery.py` — `LayerSurgeon` structural block ops
 - `weight_inversion_implementation.py` — `WeightInverter`
 - `model_visualizer.py` — architecture graph, weight/attention heatmaps
 - `runpod_manager.py` / `runpod_handler.py` — pod deployment and remote API
 - `circuit_tracer_demo.py` — circuit-tracer CLI wrapper
-- `progress_and_plan.md` — running design log and roadmap
