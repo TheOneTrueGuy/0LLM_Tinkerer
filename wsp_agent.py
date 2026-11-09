@@ -123,6 +123,49 @@ def make_tools(model_manager) -> List[Dict[str, Any]]:
            "perplexity on a fixed passage. Run before and after edits — the "
            "delta is your keep/revert signal. Label each run.",
            {"label": {"type": "string"}}),
+        fn("check_compat",
+           "Estimate merge coverage vs a reference checkpoint — config "
+           "dims only, no weights downloaded",
+           {"name": {"type": "string"}}, ["name"]),
+        fn("load_reference",
+           "Load a same-architecture reference checkpoint to merge "
+           "against (check_compat first)",
+           {"name": {"type": "string"}}, ["name"]),
+        fn("merge",
+           "Task-vector merge: W += lam*(R-W) [task_add], "
+           "W -= lam*(R-W) [task_negate], or soup average. Optional "
+           "filter limits to params containing the substring.",
+           {"mode": {"type": "string",
+                     "enum": ["task_add", "task_negate", "soup"]},
+            "lam": {"type": "number"},
+            "filter": {"type": "string"}},
+           ["mode", "lam"]),
+        fn("undo_merge",
+           "Restore all merge/latent weight backups"),
+        fn("latent_baseline",
+           "Capture baseline weights for delta ensembles (optional "
+           "param filter, e.g. 'mlp')",
+           {"filter": {"type": "string"}}),
+        fn("record_delta",
+           "Record current-weights-minus-baseline as a delta set — "
+           "apply an edit first",
+           {"label": {"type": "string"}}),
+        fn("auto_ensemble",
+           "Auto-generate K structured delta sets (random column "
+           "rescales) against the baseline",
+           {"k": {"type": "integer", "default": 6},
+            "edits": {"type": "integer", "default": 3},
+            "filter": {"type": "string"}}),
+        fn("compute_basis",
+           "PCA over recorded delta sets — returns variance share per "
+           "principal component",
+           {"n": {"type": "integer", "default": 8}}),
+        fn("set_pc_mix",
+           "Latent-space edit: W = anchor + sum s_i*PC_i. scale 1.0 "
+           "~ one typical delta magnitude; 0 removes the component",
+           {"scales": {"type": "array",
+                       "items": {"type": "number"}}},
+           ["scales"]),
     ]
 
 
@@ -220,6 +263,58 @@ def make_executor(model_manager) -> Callable[[str, Dict[str, Any]], str]:
                 r = mm.eval_prober.evaluate(args.get("label") or "")
                 r["history"] = mm.eval_prober.history
                 return json.dumps(r)
+            wm = getattr(mm, "weight_merger", None)
+            if name == "check_compat":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                return json.dumps(
+                    {"report": wm.check_compatibility(args["name"])})
+            if name == "load_reference":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                return json.dumps(
+                    {"result": wm.load_reference(args["name"])})
+            if name == "merge":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                return json.dumps(wm.merge(
+                    args["mode"], float(args["lam"]),
+                    args.get("filter") or ""))
+            if name == "undo_merge":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                return json.dumps({"result": wm.undo()})
+            if name == "latent_baseline":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                return json.dumps({"result": wm.set_baseline(
+                    args.get("filter") or "")})
+            if name == "record_delta":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                return json.dumps({"result": wm.add_delta_set(
+                    args.get("label") or "")})
+            if name == "auto_ensemble":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                return json.dumps({"result": wm.auto_ensemble(
+                    int(args.get("k", 6)), int(args.get("edits", 3)),
+                    args.get("filter") or None)})
+            if name == "compute_basis":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                r = wm.compute_basis(int(args.get("n", 8)))
+                if "error" in r:
+                    return json.dumps(r)
+                return json.dumps({
+                    "shared_params": len(r["names"]),
+                    "variance_share": r["variance_share"],
+                    "summary": wm.basis_summary()})
+            if name == "set_pc_mix":
+                if wm is None:
+                    return json.dumps({"error": "no merger"})
+                return json.dumps({"result": wm.set_component_mix(
+                    [float(s) for s in args["scales"]])})
             return json.dumps({"error": f"unknown tool {name}"})
         except Exception as e:
             logger.warning("tool %s failed: %s", name, e)
@@ -265,6 +360,22 @@ def make_remote_executor(rm, proxy_url: str) -> Callable[[str, Dict[str, Any]], 
             if name == "evaluate":
                 return json.dumps(
                     rm.remote_eval(proxy_url, args.get("label") or ""))
+            if name == "check_compat":
+                return json.dumps(
+                    rm.remote_ws_check(proxy_url, args["name"]))
+            if name == "load_reference":
+                return json.dumps(
+                    rm.remote_ws_load_ref(proxy_url, args["name"]))
+            if name == "merge":
+                return json.dumps(rm.remote_ws_merge(
+                    proxy_url, args["mode"], float(args["lam"]),
+                    args.get("filter") or ""))
+            if name == "undo_merge":
+                return json.dumps(rm.remote_ws_undo(proxy_url))
+            if name in ("latent_baseline", "record_delta", "auto_ensemble",
+                        "compute_basis", "set_pc_mix"):
+                return json.dumps(
+                    {"error": "latent-basis tools are local-only for now"})
             return json.dumps({"error": f"unknown tool {name}"})
         except Exception as e:
             logger.warning("remote tool %s failed: %s", name, e)
