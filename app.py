@@ -1870,6 +1870,193 @@ def create_interface():
         # Main Interface Tabs
         with gr.Tabs():
             # Generation Tab
+            with gr.TabItem("Weight Space"):
+                gr.Markdown(
+                    "Task-vector arithmetic on weights — stage 1 of Weight Space "
+                    "Modelling. Load a second checkpoint of the **same architecture** "
+                    "and merge: `W + λ·(R−W)` moves the live model toward it, "
+                    "`W − λ·(R−W)` moves away, `soup` averages. Only params with "
+                    "matching name+shape merge; originals are backed up for undo. "
+                    "Composes with inversion, sculpt ops, and steering."
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        ws_ref_name = gr.Textbox(
+                            label="Reference model (name or path)",
+                            placeholder="e.g., distilgpt2 or a saved_model dir",
+                        )
+                        ws_ref_pick = gr.Dropdown(
+                            label="...or pick from models already on disk (fills field above)",
+                            choices=_cached_model_names(),
+                            interactive=True,
+                            allow_custom_value=True,
+                        )
+                        with gr.Row():
+                            ws_check_btn = gr.Button("Check compat")
+                            ws_load_btn = gr.Button("Load Reference")
+                            ws_release_btn = gr.Button("Release Reference")
+                        ws_mode = gr.Dropdown(
+                            list(MERGE_MODES), value="task_add", label="Merge mode"
+                        )
+                        ws_lam = gr.Slider(-2.0, 2.0, value=1.0, step=0.05, label="λ")
+                        ws_filter = gr.Textbox(
+                            label="Param name filter (optional)",
+                            placeholder="e.g., mlp or transformer.h.3",
+                        )
+                        with gr.Row():
+                            ws_merge_btn = gr.Button("Apply merge", variant="primary")
+                            ws_undo_btn = gr.Button("Undo merge")
+                    with gr.Column(scale=1):
+                        ws_status = gr.Textbox(label="Status", interactive=False)
+                        ws_history = gr.Textbox(
+                            label="Merge history", lines=8, interactive=False
+                        )
+                        ws_prompt = gr.Textbox(label="Prompt", lines=2)
+                        ws_gen_btn = gr.Button("Generate on current weights")
+                        ws_output = gr.Textbox(label="Output", lines=6)
+                        with gr.Accordion(
+                            "λ sweep — degradation curve", open=False
+                        ):
+                            gr.Markdown(
+                                "Non-destructive: restores baseline, merges at each "
+                                "λ, generates, and restores at the end. Shows how "
+                                "behavior changes across the merge path."
+                            )
+                            ws_sweep_lams = gr.Textbox(
+                                label="λ values",
+                                value="0 0.25 0.45 0.6 0.75 1.0",
+                            )
+                            ws_sweep_btn = gr.Button("Run λ sweep")
+                            ws_sweep_out = gr.Textbox(
+                                label="Outputs per λ", lines=10, interactive=False
+                            )
+
+                with gr.Accordion(
+                    "Latent basis — delta ensembles & principal components",
+                    open=False,
+                ):
+                    gr.Markdown(
+                        "**WSL stage 2.** Set a baseline, then collect weight deltas: "
+                        "apply any weight-editing op and **Record delta set**, or "
+                        "auto-generate structured edits. Compute a PCA basis over the "
+                        "sets, then apply `scale × PC` as a latent-space edit. "
+                        "Undo via *Undo merge* above. A param filter (e.g. `mlp`) "
+                        "keeps ensembles small and PCA fast."
+                    )
+                    with gr.Row():
+                        ws_ens_filter = gr.Textbox(
+                            label="Param filter",
+                            placeholder="e.g., mlp (empty = all params)",
+                            scale=2,
+                        )
+                        ws_set_base_btn = gr.Button("Set baseline")
+                        ws_label = gr.Textbox(label="Set label", scale=1)
+                        ws_add_set_btn = gr.Button("Record delta set")
+                    with gr.Row():
+                        ws_auto_k = gr.Slider(2, 20, value=6, step=1,
+                                              label="Auto sets")
+                        ws_auto_edits = gr.Slider(1, 10, value=3, step=1,
+                                                  label="Edits per set")
+                        ws_auto_btn = gr.Button("Auto-generate ensemble")
+                        ws_clear_sets_btn = gr.Button("Clear sets")
+                    ws_sets = gr.Textbox(label="Delta sets", lines=6,
+                                         interactive=False)
+                    with gr.Row():
+                        ws_ncomp = gr.Slider(1, 16, value=8, step=1,
+                                             label="Components")
+                        ws_basis_btn = gr.Button("Compute basis")
+                        ws_basis_out = gr.Textbox(label="Basis", lines=3,
+                                                  interactive=False, scale=2)
+                    gr.Markdown(
+                        "**PC sliders** — each position sets an absolute mix "
+                        "(`W = anchor + Σ sᵢ·PCᵢ`); scale 1.0 ≈ one typical "
+                        "delta magnitude. Drag back to 0 to remove a component."
+                    )
+                    ws_pc_sliders = []
+                    for row in range(2):
+                        with gr.Row():
+                            for c in range(4):
+                                ws_pc_sliders.append(gr.Slider(
+                                    -3.0, 3.0, value=0.0, step=0.05,
+                                    label=f"PC{row * 4 + c}",
+                                ))
+
+            with gr.TabItem("Fact Writer"):
+                gr.Markdown(
+                    "Closed-form fact writing — teach the model a fact by "
+                    "solving for a weight change (MEMIT-style, no gradients). "
+                    "Give several phrasings of a question plus the answer to "
+                    "write; the solver targets `down_proj`/`c_proj` in the top "
+                    "~5 decoder layers while protecting ~40 general Q&As, the "
+                    "question tokens, and any contrast prompts. First use "
+                    "builds a one-time protection cache (~40 passes)."
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        fw_asks = gr.Textbox(
+                            label="Question phrasings (one per line)", lines=4,
+                            placeholder="Who is Guy Trudel?\nTell me about Guy Trudel.",
+                        )
+                        fw_answer = gr.Textbox(
+                            label="Answer to write", lines=2,
+                            placeholder="Guy Trudel is an AI researcher...",
+                        )
+                        fw_contrast = gr.Textbox(
+                            label="Contrast questions to protect (optional, one per line)",
+                            lines=3,
+                            placeholder="Who is Guy Pearce?",
+                        )
+                        with gr.Row():
+                            fw_write_btn = gr.Button("Write fact",
+                                                     variant="primary")
+                            fw_undo_btn = gr.Button("Undo last")
+                            fw_commit_btn = gr.Button("Commit to weights")
+                        fw_active = gr.Checkbox(
+                            label="Fact edit active (uncheck for A/B)",
+                            value=True)
+                    with gr.Column(scale=1):
+                        fw_log = gr.Textbox(label="Write log", lines=10,
+                                            interactive=False)
+                        fw_facts = gr.Textbox(label="Written facts", lines=4,
+                                              interactive=False)
+                        fw_eval_q = gr.Textbox(
+                            label="Eval prompt (held-out phrasing)", lines=2)
+                        fw_eval_n = gr.Slider(10, 120, value=60, step=5,
+                                              label="Max tokens")
+                        fw_eval_btn = gr.Button("Compare base vs edited")
+                        with gr.Row():
+                            fw_base_out = gr.Textbox(label="Base", lines=5)
+                            fw_edit_out = gr.Textbox(label="Edited", lines=5)
+
+            with gr.TabItem("WSP Agent"):
+                gr.Markdown(
+                    "Weight-Space Programming: an LLM driving this workbench "
+                    "through tool calls — inspect weights, apply sculpt ops, "
+                    "generate to evaluate, undo. Agent model via OpenRouter "
+                    "(key in `OPENROUTER_API_KEY` or `OR_key.txt`). Every "
+                    "action lands in the normal op log, so you can inspect "
+                    "and undo afterward like any manual edit."
+                )
+                with gr.Row():
+                    wsp_model = gr.Textbox(
+                        label="Agent model",
+                        value=wsp_agent.DEFAULT_MODEL,
+                        placeholder="e.g., qwen/qwen3-32b",
+                        scale=2,
+                    )
+                    wsp_steps = gr.Slider(1, 24, value=8, step=1,
+                                          label="Max steps", scale=1)
+                wsp_instruction = gr.Textbox(
+                    label="Instruction", lines=3,
+                    placeholder=(
+                        "e.g., Find a neuron in layer 5 that affects output "
+                        "and ablate it, then tell me what changed"
+                    ),
+                )
+                wsp_run_btn = gr.Button("Run agent", variant="primary")
+                wsp_log = gr.Textbox(label="Agent trace", lines=24,
+                                     interactive=False)
+
             with gr.TabItem("Text Generation"):
                 with gr.Row():
                     with gr.Column(scale=1):
@@ -2550,193 +2737,6 @@ renderPlot();
                         sess_status = gr.Textbox(
                             label="Status", lines=8, interactive=False
                         )
-
-            with gr.TabItem("Weight Space"):
-                gr.Markdown(
-                    "Task-vector arithmetic on weights — stage 1 of Weight Space "
-                    "Modelling. Load a second checkpoint of the **same architecture** "
-                    "and merge: `W + λ·(R−W)` moves the live model toward it, "
-                    "`W − λ·(R−W)` moves away, `soup` averages. Only params with "
-                    "matching name+shape merge; originals are backed up for undo. "
-                    "Composes with inversion, sculpt ops, and steering."
-                )
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        ws_ref_name = gr.Textbox(
-                            label="Reference model (name or path)",
-                            placeholder="e.g., distilgpt2 or a saved_model dir",
-                        )
-                        ws_ref_pick = gr.Dropdown(
-                            label="...or pick from models already on disk (fills field above)",
-                            choices=_cached_model_names(),
-                            interactive=True,
-                            allow_custom_value=True,
-                        )
-                        with gr.Row():
-                            ws_check_btn = gr.Button("Check compat")
-                            ws_load_btn = gr.Button("Load Reference")
-                            ws_release_btn = gr.Button("Release Reference")
-                        ws_mode = gr.Dropdown(
-                            list(MERGE_MODES), value="task_add", label="Merge mode"
-                        )
-                        ws_lam = gr.Slider(-2.0, 2.0, value=1.0, step=0.05, label="λ")
-                        ws_filter = gr.Textbox(
-                            label="Param name filter (optional)",
-                            placeholder="e.g., mlp or transformer.h.3",
-                        )
-                        with gr.Row():
-                            ws_merge_btn = gr.Button("Apply merge", variant="primary")
-                            ws_undo_btn = gr.Button("Undo merge")
-                    with gr.Column(scale=1):
-                        ws_status = gr.Textbox(label="Status", interactive=False)
-                        ws_history = gr.Textbox(
-                            label="Merge history", lines=8, interactive=False
-                        )
-                        ws_prompt = gr.Textbox(label="Prompt", lines=2)
-                        ws_gen_btn = gr.Button("Generate on current weights")
-                        ws_output = gr.Textbox(label="Output", lines=6)
-                        with gr.Accordion(
-                            "λ sweep — degradation curve", open=False
-                        ):
-                            gr.Markdown(
-                                "Non-destructive: restores baseline, merges at each "
-                                "λ, generates, and restores at the end. Shows how "
-                                "behavior changes across the merge path."
-                            )
-                            ws_sweep_lams = gr.Textbox(
-                                label="λ values",
-                                value="0 0.25 0.45 0.6 0.75 1.0",
-                            )
-                            ws_sweep_btn = gr.Button("Run λ sweep")
-                            ws_sweep_out = gr.Textbox(
-                                label="Outputs per λ", lines=10, interactive=False
-                            )
-
-                with gr.Accordion(
-                    "Latent basis — delta ensembles & principal components",
-                    open=False,
-                ):
-                    gr.Markdown(
-                        "**WSL stage 2.** Set a baseline, then collect weight deltas: "
-                        "apply any weight-editing op and **Record delta set**, or "
-                        "auto-generate structured edits. Compute a PCA basis over the "
-                        "sets, then apply `scale × PC` as a latent-space edit. "
-                        "Undo via *Undo merge* above. A param filter (e.g. `mlp`) "
-                        "keeps ensembles small and PCA fast."
-                    )
-                    with gr.Row():
-                        ws_ens_filter = gr.Textbox(
-                            label="Param filter",
-                            placeholder="e.g., mlp (empty = all params)",
-                            scale=2,
-                        )
-                        ws_set_base_btn = gr.Button("Set baseline")
-                        ws_label = gr.Textbox(label="Set label", scale=1)
-                        ws_add_set_btn = gr.Button("Record delta set")
-                    with gr.Row():
-                        ws_auto_k = gr.Slider(2, 20, value=6, step=1,
-                                              label="Auto sets")
-                        ws_auto_edits = gr.Slider(1, 10, value=3, step=1,
-                                                  label="Edits per set")
-                        ws_auto_btn = gr.Button("Auto-generate ensemble")
-                        ws_clear_sets_btn = gr.Button("Clear sets")
-                    ws_sets = gr.Textbox(label="Delta sets", lines=6,
-                                         interactive=False)
-                    with gr.Row():
-                        ws_ncomp = gr.Slider(1, 16, value=8, step=1,
-                                             label="Components")
-                        ws_basis_btn = gr.Button("Compute basis")
-                        ws_basis_out = gr.Textbox(label="Basis", lines=3,
-                                                  interactive=False, scale=2)
-                    gr.Markdown(
-                        "**PC sliders** — each position sets an absolute mix "
-                        "(`W = anchor + Σ sᵢ·PCᵢ`); scale 1.0 ≈ one typical "
-                        "delta magnitude. Drag back to 0 to remove a component."
-                    )
-                    ws_pc_sliders = []
-                    for row in range(2):
-                        with gr.Row():
-                            for c in range(4):
-                                ws_pc_sliders.append(gr.Slider(
-                                    -3.0, 3.0, value=0.0, step=0.05,
-                                    label=f"PC{row * 4 + c}",
-                                ))
-
-            with gr.TabItem("Fact Writer"):
-                gr.Markdown(
-                    "Closed-form fact writing — teach the model a fact by "
-                    "solving for a weight change (MEMIT-style, no gradients). "
-                    "Give several phrasings of a question plus the answer to "
-                    "write; the solver targets `down_proj`/`c_proj` in the top "
-                    "~5 decoder layers while protecting ~40 general Q&As, the "
-                    "question tokens, and any contrast prompts. First use "
-                    "builds a one-time protection cache (~40 passes)."
-                )
-                with gr.Row():
-                    with gr.Column(scale=1):
-                        fw_asks = gr.Textbox(
-                            label="Question phrasings (one per line)", lines=4,
-                            placeholder="Who is Guy Trudel?\nTell me about Guy Trudel.",
-                        )
-                        fw_answer = gr.Textbox(
-                            label="Answer to write", lines=2,
-                            placeholder="Guy Trudel is an AI researcher...",
-                        )
-                        fw_contrast = gr.Textbox(
-                            label="Contrast questions to protect (optional, one per line)",
-                            lines=3,
-                            placeholder="Who is Guy Pearce?",
-                        )
-                        with gr.Row():
-                            fw_write_btn = gr.Button("Write fact",
-                                                     variant="primary")
-                            fw_undo_btn = gr.Button("Undo last")
-                            fw_commit_btn = gr.Button("Commit to weights")
-                        fw_active = gr.Checkbox(
-                            label="Fact edit active (uncheck for A/B)",
-                            value=True)
-                    with gr.Column(scale=1):
-                        fw_log = gr.Textbox(label="Write log", lines=10,
-                                            interactive=False)
-                        fw_facts = gr.Textbox(label="Written facts", lines=4,
-                                              interactive=False)
-                        fw_eval_q = gr.Textbox(
-                            label="Eval prompt (held-out phrasing)", lines=2)
-                        fw_eval_n = gr.Slider(10, 120, value=60, step=5,
-                                              label="Max tokens")
-                        fw_eval_btn = gr.Button("Compare base vs edited")
-                        with gr.Row():
-                            fw_base_out = gr.Textbox(label="Base", lines=5)
-                            fw_edit_out = gr.Textbox(label="Edited", lines=5)
-
-            with gr.TabItem("WSP Agent"):
-                gr.Markdown(
-                    "Weight-Space Programming: an LLM driving this workbench "
-                    "through tool calls — inspect weights, apply sculpt ops, "
-                    "generate to evaluate, undo. Agent model via OpenRouter "
-                    "(key in `OPENROUTER_API_KEY` or `OR_key.txt`). Every "
-                    "action lands in the normal op log, so you can inspect "
-                    "and undo afterward like any manual edit."
-                )
-                with gr.Row():
-                    wsp_model = gr.Textbox(
-                        label="Agent model",
-                        value=wsp_agent.DEFAULT_MODEL,
-                        placeholder="e.g., qwen/qwen3-32b",
-                        scale=2,
-                    )
-                    wsp_steps = gr.Slider(1, 24, value=8, step=1,
-                                          label="Max steps", scale=1)
-                wsp_instruction = gr.Textbox(
-                    label="Instruction", lines=3,
-                    placeholder=(
-                        "e.g., Find a neuron in layer 5 that affects output "
-                        "and ablate it, then tell me what changed"
-                    ),
-                )
-                wsp_run_btn = gr.Button("Run agent", variant="primary")
-                wsp_log = gr.Textbox(label="Agent trace", lines=24,
-                                     interactive=False)
 
         # Set up event handlers
         MODEL_OUTPUTS = [
