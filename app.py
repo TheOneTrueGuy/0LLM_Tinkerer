@@ -45,6 +45,7 @@ class ModelManager:
         self.neuron_sculptor = None
         self.weight_merger = None
         self.fact_editor = None
+        self.eval_prober = None
         logger.info(f"Using device: {self.device}")
 
     def get_model_structure(self) -> str:
@@ -108,6 +109,7 @@ class ModelManager:
             self.neuron_sculptor = None
             self.weight_merger = WeightMerger(self.model)
             self.fact_editor = None
+            self.eval_prober = None
             
             # Create architecture visualization (handle None gracefully)
             try:
@@ -1366,6 +1368,29 @@ def create_interface():
         fe.active = bool(active)
         return f"Fact edit {'ON' if fe.active else 'OFF'} (toggle for A/B)."
 
+    # --- Eval probe: quantitative keep/revert signal ---
+
+    def _ev_prober():
+        if model_manager.eval_prober is None:
+            from eval_probe import EvalProber
+            model_manager.eval_prober = EvalProber(
+                model_manager.model, model_manager.tokenizer)
+        return model_manager.eval_prober
+
+    def ev_run(label):
+        if model_manager.model is None:
+            return "Load a base model first.", ""
+        ep = _ev_prober()
+        r = ep.evaluate((label or "").strip() or f"eval{len(ep.history)}")
+        return (f"mc_acc {r['mc_acc']:.3f} ({r['mc_n']} probes)   "
+                f"ppl {r['ppl']:.2f}"), ep.history_text()
+
+    def ev_clear():
+        ep = model_manager.eval_prober
+        if ep:
+            ep.history = []
+        return "History cleared.", ""
+
     # --- WSP agent: an LLM driving the op surface via OpenRouter ---
 
     def wsp_run(or_model, instruction, max_steps):
@@ -2027,6 +2052,27 @@ def create_interface():
                         with gr.Row():
                             fw_base_out = gr.Textbox(label="Base", lines=5)
                             fw_edit_out = gr.Textbox(label="Edited", lines=5)
+
+            with gr.TabItem("Eval Probe"):
+                gr.Markdown(
+                    "Quantitative keep/revert signal. `mc_acc` scores 28 "
+                    "multiple-choice probes by answer-letter logprob (works "
+                    "on weak models); `ppl` is a fixed-passage fluency "
+                    "canary. **Workflow: eval → edit → eval → compare.** "
+                    "The agent uses the same probe for its own decisions."
+                )
+                with gr.Row():
+                    ev_label = gr.Textbox(
+                        label="Eval label", scale=2,
+                        placeholder="e.g., base, after-merge-0.45",
+                    )
+                    ev_run_btn = gr.Button("Run eval", variant="primary",
+                                           scale=1)
+                    ev_clear_btn = gr.Button("Clear history", scale=1)
+                ev_result = gr.Textbox(label="Latest result",
+                                       interactive=False)
+                ev_history = gr.Textbox(label="Eval history", lines=12,
+                                        interactive=False)
 
             with gr.TabItem("WSP Agent"):
                 gr.Markdown(
@@ -3102,6 +3148,11 @@ renderPlot();
         fw_commit_btn.click(fn=fw_commit, outputs=[fw_log, fw_facts])
         fw_active.change(fn=fw_set_active, inputs=[fw_active],
                          outputs=[fw_log])
+
+        # Eval Probe
+        ev_run_btn.click(fn=ev_run, inputs=[ev_label],
+                         outputs=[ev_result, ev_history])
+        ev_clear_btn.click(fn=ev_clear, outputs=[ev_result, ev_history])
 
         # WSP agent
         wsp_run_btn.click(

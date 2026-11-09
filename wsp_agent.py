@@ -118,6 +118,11 @@ def make_tools(model_manager) -> List[Dict[str, Any]]:
             "contrast": {"type": "array", "items": {"type": "string"}}},
            ["asks", "answer"]),
         fn("undo_fact", "Remove the most recently written fact"),
+        fn("evaluate",
+           "Quantitative eval: mc_acc over 28 multiple-choice probes plus "
+           "perplexity on a fixed passage. Run before and after edits — the "
+           "delta is your keep/revert signal. Label each run.",
+           {"label": {"type": "string"}}),
     ]
 
 
@@ -208,6 +213,13 @@ def make_executor(model_manager) -> Callable[[str, Dict[str, Any]], str]:
                 if mm.fact_editor is None:
                     return json.dumps({"error": "no facts written"})
                 return json.dumps({"result": mm.fact_editor.undo_last()})
+            if name == "evaluate":
+                from eval_probe import EvalProber
+                if mm.eval_prober is None:
+                    mm.eval_prober = EvalProber(mm.model, mm.tokenizer)
+                r = mm.eval_prober.evaluate(args.get("label") or "")
+                r["history"] = mm.eval_prober.history
+                return json.dumps(r)
             return json.dumps({"error": f"unknown tool {name}"})
         except Exception as e:
             logger.warning("tool %s failed: %s", name, e)
@@ -220,8 +232,10 @@ SYSTEM_PROMPT = (
     "workbench that has a small language model loaded and exposes tools to "
     "inspect its parameters, edit them, and generate text. Work like a "
     "researcher: inspect before editing, make small reversible changes, "
-    "generate text to evaluate each edit, and undo anything that hurts the "
-    "model. Explain briefly what you did and what you observed."
+    "and use the evaluate tool BEFORE and AFTER edits — the mc_acc and "
+    "perplexity deltas are your keep/revert signal. Generate text to "
+    "inspect behavior qualitatively. Undo anything that hurts the model. "
+    "Explain briefly what you did and what you observed."
 )
 
 
