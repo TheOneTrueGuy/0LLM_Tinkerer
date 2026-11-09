@@ -108,6 +108,16 @@ def make_tools(model_manager) -> List[Dict[str, Any]]:
         fn("undo_sculpt",
            "Undo the last N sculpt ops (n=0 undoes all)",
            {"n": {"type": "integer", "default": 1}}),
+        fn("write_fact",
+           "Closed-form fact write (MEMIT-style, no gradients): teach the "
+           "model that questions in 'asks' are answered by 'answer'. Give "
+           "3-6 phrasings for robustness; optional 'contrast' protects "
+           "look-alike questions. Expensive: ~1-3 min on small models.",
+           {"asks": {"type": "array", "items": {"type": "string"}},
+            "answer": {"type": "string"},
+            "contrast": {"type": "array", "items": {"type": "string"}}},
+           ["asks", "answer"]),
+        fn("undo_fact", "Remove the most recently written fact"),
     ]
 
 
@@ -185,6 +195,19 @@ def make_executor(model_manager) -> Callable[[str, Dict[str, Any]], str]:
                     msgs = [sc.undo() for _ in range(n)]
                     msg = msgs[-1]
                 return json.dumps({"result": msg})
+            if name == "write_fact":
+                from fact_editor import FactEditor
+                if mm.fact_editor is None:
+                    mm.fact_editor = FactEditor(mm.model, mm.tokenizer)
+                stats = mm.fact_editor.teach(
+                    args["asks"], args["answer"],
+                    args.get("contrast") or [])
+                stats.pop("history", None)
+                return json.dumps(stats, default=str)
+            if name == "undo_fact":
+                if mm.fact_editor is None:
+                    return json.dumps({"error": "no facts written"})
+                return json.dumps({"result": mm.fact_editor.undo_last()})
             return json.dumps({"error": f"unknown tool {name}"})
         except Exception as e:
             logger.warning("tool %s failed: %s", name, e)

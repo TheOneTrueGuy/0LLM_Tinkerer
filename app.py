@@ -44,6 +44,7 @@ class ModelManager:
         self.layer_surgeon = None
         self.neuron_sculptor = None
         self.weight_merger = None
+        self.fact_editor = None
         logger.info(f"Using device: {self.device}")
 
     def get_model_structure(self) -> str:
@@ -106,6 +107,7 @@ class ModelManager:
             self.layer_surgeon = LayerSurgeon(self.model)
             self.neuron_sculptor = None
             self.weight_merger = WeightMerger(self.model)
+            self.fact_editor = None
             
             # Create architecture visualization (handle None gracefully)
             try:
@@ -1302,6 +1304,67 @@ def create_interface():
         if wm is None:
             return "Load a base model first.", ""
         return wm.set_component_mix(list(scales)), wm.describe()
+
+    # --- Fact Writer: closed-form fact writes (MEMIT-style) ---
+
+    def _fw():
+        if model_manager.fact_editor is None:
+            from fact_editor import FactEditor
+            model_manager.fact_editor = FactEditor(
+                model_manager.model, model_manager.tokenizer)
+        return model_manager.fact_editor
+
+    def fw_teach(asks_text, answer, contrast_text):
+        if model_manager.model is None:
+            yield "Load a base model first.", ""
+            return
+        asks = [a.strip() for a in (asks_text or "").splitlines() if a.strip()]
+        contrast = [c.strip() for c in (contrast_text or "").splitlines()
+                    if c.strip()]
+        if not asks or not (answer or "").strip():
+            yield "Give at least one question phrasing and an answer.", ""
+            return
+        fe = _fw()
+        log = [f"Editing down-proj layers {fe.Ls[0]}-{fe.Ls[-1]}..."]
+        yield "\n".join(log), fe.describe()
+        try:
+            stats = fe.teach(
+                asks, answer.strip(), contrast,
+                progress=lambda i, n, msg: log.append(f"  {msg}"))
+            log.append(f"Done in {stats['seconds']}s — "
+                       f"gain {stats['gain']}, "
+                       f"|dW|/|W| max {stats['dW_rel_max']}, "
+                       f"tokens>50% {stats['answer_tokens_above_50pct']}, "
+                       f"exact {stats['free_exact']}")
+        except Exception as e:
+            log.append(f"Write failed: {e}")
+        yield "\n".join(log), fe.describe()
+
+    def fw_compare(q, n_tokens):
+        if model_manager.fact_editor is None:
+            return "", "", "Write a fact first."
+        r = model_manager.fact_editor.compare(
+            (q or "").strip() or "Tell me a fact.", int(n_tokens))
+        return r["base"], r["edited"], "base vs edited (greedy)"
+
+    def fw_undo():
+        fe = model_manager.fact_editor
+        if fe is None:
+            return "Nothing written yet.", ""
+        return fe.undo_last(), fe.describe()
+
+    def fw_commit():
+        fe = model_manager.fact_editor
+        if fe is None:
+            return "Nothing written yet.", ""
+        return fe.commit(), fe.describe()
+
+    def fw_set_active(active):
+        fe = model_manager.fact_editor
+        if fe is None:
+            return "Nothing written yet."
+        fe.active = bool(active)
+        return f"Fact edit {'ON' if fe.active else 'OFF'} (toggle for A/B)."
 
     # --- WSP agent: an LLM driving the op surface via OpenRouter ---
 
@@ -2599,6 +2662,53 @@ renderPlot();
                                     label=f"PC{row * 4 + c}",
                                 ))
 
+            with gr.TabItem("Fact Writer"):
+                gr.Markdown(
+                    "Closed-form fact writing — teach the model a fact by "
+                    "solving for a weight change (MEMIT-style, no gradients). "
+                    "Give several phrasings of a question plus the answer to "
+                    "write; the solver targets `down_proj`/`c_proj` in the top "
+                    "~5 decoder layers while protecting ~40 general Q&As, the "
+                    "question tokens, and any contrast prompts. First use "
+                    "builds a one-time protection cache (~40 passes)."
+                )
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        fw_asks = gr.Textbox(
+                            label="Question phrasings (one per line)", lines=4,
+                            placeholder="Who is Guy Trudel?\nTell me about Guy Trudel.",
+                        )
+                        fw_answer = gr.Textbox(
+                            label="Answer to write", lines=2,
+                            placeholder="Guy Trudel is an AI researcher...",
+                        )
+                        fw_contrast = gr.Textbox(
+                            label="Contrast questions to protect (optional, one per line)",
+                            lines=3,
+                            placeholder="Who is Guy Pearce?",
+                        )
+                        with gr.Row():
+                            fw_write_btn = gr.Button("Write fact",
+                                                     variant="primary")
+                            fw_undo_btn = gr.Button("Undo last")
+                            fw_commit_btn = gr.Button("Commit to weights")
+                        fw_active = gr.Checkbox(
+                            label="Fact edit active (uncheck for A/B)",
+                            value=True)
+                    with gr.Column(scale=1):
+                        fw_log = gr.Textbox(label="Write log", lines=10,
+                                            interactive=False)
+                        fw_facts = gr.Textbox(label="Written facts", lines=4,
+                                              interactive=False)
+                        fw_eval_q = gr.Textbox(
+                            label="Eval prompt (held-out phrasing)", lines=2)
+                        fw_eval_n = gr.Slider(10, 120, value=60, step=5,
+                                              label="Max tokens")
+                        fw_eval_btn = gr.Button("Compare base vs edited")
+                        with gr.Row():
+                            fw_base_out = gr.Textbox(label="Base", lines=5)
+                            fw_edit_out = gr.Textbox(label="Edited", lines=5)
+
             with gr.TabItem("WSP Agent"):
                 gr.Markdown(
                     "Weight-Space Programming: an LLM driving this workbench "
@@ -2981,6 +3091,17 @@ renderPlot();
         for s in ws_pc_sliders:
             s.release(fn=ws_set_mix, inputs=ws_pc_sliders,
                       outputs=[ws_status, ws_history])
+
+        # Fact Writer
+        fw_write_btn.click(fn=fw_teach,
+                           inputs=[fw_asks, fw_answer, fw_contrast],
+                           outputs=[fw_log, fw_facts])
+        fw_eval_btn.click(fn=fw_compare, inputs=[fw_eval_q, fw_eval_n],
+                          outputs=[fw_base_out, fw_edit_out, fw_log])
+        fw_undo_btn.click(fn=fw_undo, outputs=[fw_log, fw_facts])
+        fw_commit_btn.click(fn=fw_commit, outputs=[fw_log, fw_facts])
+        fw_active.change(fn=fw_set_active, inputs=[fw_active],
+                         outputs=[fw_log])
 
         # WSP agent
         wsp_run_btn.click(
