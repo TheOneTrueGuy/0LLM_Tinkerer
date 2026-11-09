@@ -24,6 +24,7 @@ from layer_surgery import LayerSurgeon
 from circuit_tracer_demo import run_circuit_tracer
 from neuron_explorer import NeuronExplorer, NeuronSculptor, neuron_write_column, list_runs
 import session_store
+import wsp_agent
 from weight_space import WeightMerger, MERGE_MODES
 import plotly.graph_objects as go
 
@@ -1302,6 +1303,25 @@ def create_interface():
             return "Load a base model first.", ""
         return wm.set_component_mix(list(scales)), wm.describe()
 
+    # --- WSP agent: an LLM driving the op surface via OpenRouter ---
+
+    def wsp_run(or_model, instruction, max_steps):
+        if model_manager.model is None:
+            yield "Load a base model first."
+            return
+        log = []
+        try:
+            for line, done in wsp_agent.run_agent(
+                model_manager, (or_model or "").strip() or wsp_agent.DEFAULT_MODEL,
+                instruction, int(max_steps),
+            ):
+                log.append(line)
+                yield "\n\n".join(log)
+                if done:
+                    break
+        except Exception as e:
+            yield "\n\n".join(log) + f"\n\nAgent error: {e}"
+
     def _as_choice(value):
         if isinstance(value, (list, tuple)):
             return value[0] if value else None
@@ -2579,6 +2599,35 @@ renderPlot();
                                     label=f"PC{row * 4 + c}",
                                 ))
 
+            with gr.TabItem("WSP Agent"):
+                gr.Markdown(
+                    "Weight-Space Programming: an LLM driving this workbench "
+                    "through tool calls — inspect weights, apply sculpt ops, "
+                    "generate to evaluate, undo. Agent model via OpenRouter "
+                    "(key in `OPENROUTER_API_KEY` or `OR_key.txt`). Every "
+                    "action lands in the normal op log, so you can inspect "
+                    "and undo afterward like any manual edit."
+                )
+                with gr.Row():
+                    wsp_model = gr.Textbox(
+                        label="Agent model",
+                        value=wsp_agent.DEFAULT_MODEL,
+                        placeholder="e.g., qwen/qwen3-32b",
+                        scale=2,
+                    )
+                    wsp_steps = gr.Slider(1, 24, value=8, step=1,
+                                          label="Max steps", scale=1)
+                wsp_instruction = gr.Textbox(
+                    label="Instruction", lines=3,
+                    placeholder=(
+                        "e.g., Find a neuron in layer 5 that affects output "
+                        "and ablate it, then tell me what changed"
+                    ),
+                )
+                wsp_run_btn = gr.Button("Run agent", variant="primary")
+                wsp_log = gr.Textbox(label="Agent trace", lines=24,
+                                     interactive=False)
+
         # Set up event handlers
         MODEL_OUTPUTS = [
             model_status,
@@ -2932,6 +2981,13 @@ renderPlot();
         for s in ws_pc_sliders:
             s.release(fn=ws_set_mix, inputs=ws_pc_sliders,
                       outputs=[ws_status, ws_history])
+
+        # WSP agent
+        wsp_run_btn.click(
+            fn=wsp_run,
+            inputs=[wsp_model, wsp_instruction, wsp_steps],
+            outputs=[wsp_log],
+        )
 
         # Cached-model pickers fill their textboxes
         cached_models.change(fn=lambda v: v, inputs=cached_models,
