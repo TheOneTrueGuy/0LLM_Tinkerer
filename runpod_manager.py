@@ -234,6 +234,9 @@ class RunPodManager:
             for extra_name in (
                 "weight_inversion_implementation.py",
                 "neuron_explorer.py",
+                "weight_space.py",
+                "fact_editor.py",
+                "eval_probe.py",
             ):
                 extra_file = project_path / extra_name
                 if extra_file.exists():
@@ -503,6 +506,59 @@ class RunPodManager:
         resp = self._session.get(f"{proxy_url}/neuron_sweep_status", timeout=30)
         resp.raise_for_status()
         return resp.json()
+
+    def remote_eval(self, proxy_url: str, label: str = "") -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/eval", json={"label": label}, timeout=600)
+        return r.json()
+
+    def remote_fact_write(
+        self, proxy_url: str, asks: List[str], answer: str,
+        contrast: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/fact_write",
+            json={"asks": asks, "answer": answer,
+                  "contrast": contrast or []},
+            timeout=1800)
+        return r.json()
+
+    def remote_fact_compare(
+        self, proxy_url: str, q: str = "", n: int = 60,
+    ) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/fact_compare", json={"q": q, "n": n},
+            timeout=300)
+        return r.json()
+
+    def remote_fact_undo(self, proxy_url: str) -> Dict[str, Any]:
+        return requests.post(f"{proxy_url}/fact_undo", timeout=60).json()
+
+    def remote_fact_commit(self, proxy_url: str) -> Dict[str, Any]:
+        return requests.post(f"{proxy_url}/fact_commit", timeout=60).json()
+
+    def remote_ws_check(self, proxy_url: str, name: str) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/ws_check", json={"name": name}, timeout=120)
+        return r.json()
+
+    def remote_ws_load_ref(self, proxy_url: str, name: str) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/ws_load_ref", json={"name": name}, timeout=1800)
+        return r.json()
+
+    def remote_ws_merge(
+        self, proxy_url: str, mode: str = "task_add", lam: float = 1.0,
+        name_filter: str = "",
+    ) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/ws_merge",
+            json={"mode": mode, "lam": lam, "filter": name_filter},
+            timeout=900)
+        return r.json()
+
+    def remote_ws_undo(self, proxy_url: str) -> Dict[str, Any]:
+        return requests.post(f"{proxy_url}/ws_undo", timeout=120).json()
 
     def remote_neuron_sweep_result(self, proxy_url: str) -> str:
         resp = self._session.get(f"{proxy_url}/neuron_sweep_result", timeout=600)

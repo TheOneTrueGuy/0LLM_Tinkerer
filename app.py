@@ -601,6 +601,94 @@ def create_interface():
         except Exception as e:
             return f"Remote generation failed: {e}", output_manager.format_history()
 
+    # --- Remote weight-space ops (eval / merge / fact write on the pod) ---
+
+    def _rp_url():
+        return runpod_state["proxy_url"]
+
+    def rp_eval(label):
+        if not _rp_url():
+            return "No active pod."
+        try:
+            r = runpod_manager.remote_eval(_rp_url(), label or "")
+            if "error" in r:
+                return r["error"]
+            return f"mc_acc {r['mc_acc']:.3f} ({r['mc_n']})   ppl {r['ppl']:.2f}"
+        except Exception as e:
+            return f"Remote eval failed: {e}"
+
+    def rp_ref_check(name):
+        if not _rp_url():
+            return "No active pod."
+        try:
+            r = runpod_manager.remote_ws_check(_rp_url(), (name or "").strip())
+            return r.get("report") or r.get("error", "check failed")
+        except Exception as e:
+            return f"Check failed: {e}"
+
+    def rp_ref_load(name):
+        if not _rp_url():
+            return "No active pod."
+        try:
+            r = runpod_manager.remote_ws_load_ref(_rp_url(), (name or "").strip())
+            return r.get("result") or r.get("error", "load failed")
+        except Exception as e:
+            return f"Ref load failed: {e}"
+
+    def rp_merge(mode, lam):
+        if not _rp_url():
+            return "No active pod."
+        try:
+            r = runpod_manager.remote_ws_merge(_rp_url(), mode, float(lam))
+            if "error" in r:
+                return r["error"]
+            return (f"Merged {r['merged']} params ({r['mode']} lam={r['lam']}); "
+                    f"{r['skipped_mismatch']} skipped")
+        except Exception as e:
+            return f"Merge failed: {e}"
+
+    def rp_ws_undo():
+        if not _rp_url():
+            return "No active pod."
+        try:
+            return runpod_manager.remote_ws_undo(_rp_url()).get(
+                "result", "undo failed")
+        except Exception as e:
+            return f"Undo failed: {e}"
+
+    def rp_fact_write(asks_text, answer):
+        if not _rp_url():
+            return "No active pod."
+        asks = [a.strip() for a in (asks_text or "").splitlines() if a.strip()]
+        if not asks or not (answer or "").strip():
+            return "Give question phrasings and an answer."
+        try:
+            r = runpod_manager.remote_fact_write(
+                _rp_url(), asks, answer.strip())
+            return json.dumps(r, indent=2, default=str)
+        except Exception as e:
+            return f"Fact write failed: {e}"
+
+    def rp_fact_compare(q):
+        if not _rp_url():
+            return "No active pod."
+        try:
+            r = runpod_manager.remote_fact_compare(_rp_url(), (q or "").strip())
+            if "error" in r:
+                return r["error"]
+            return f"BASE:\n{r.get('base','')}\n\nEDITED:\n{r.get('edited','')}"
+        except Exception as e:
+            return f"Compare failed: {e}"
+
+    def rp_fact_undo():
+        if not _rp_url():
+            return "No active pod."
+        try:
+            return runpod_manager.remote_fact_undo(_rp_url()).get(
+                "result", "undo failed")
+        except Exception as e:
+            return f"Undo failed: {e}"
+
     def runpod_connect_existing(api_key: str, pod_id: str, proxy_url: str) -> str:
         pod_id = (pod_id or "").strip()
         proxy_url = (proxy_url or "").strip().rstrip("/")
@@ -2531,6 +2619,63 @@ renderPlot();
                             label="Remote Inversion Status", lines=8, interactive=False
                         )
 
+                with gr.Accordion(
+                    "Remote weight-space ops (eval / merge / fact write)",
+                    open=False,
+                ):
+                    gr.Markdown(
+                        "The new stack runs on the pod too — same semantics as "
+                        "the local tabs, useful for 0.8B+ models and real "
+                        "checkpoints on GPU."
+                    )
+                    with gr.Row():
+                        rp_eval_label = gr.Textbox(
+                            label="Eval label", scale=2,
+                            placeholder="base, after-merge...",
+                        )
+                        rp_eval_btn = gr.Button("Run eval on pod", scale=1)
+                        rp_eval_out = gr.Textbox(label="Eval", scale=2)
+                    with gr.Row():
+                        rp_ref_name = gr.Textbox(
+                            label="Reference model", scale=2,
+                            placeholder="same-arch checkpoint on the hub",
+                        )
+                        rp_ref_check_btn = gr.Button("Check compat", scale=1)
+                        rp_ref_load_btn = gr.Button("Load ref on pod", scale=1)
+                    with gr.Row():
+                        rp_merge_mode = gr.Dropdown(
+                            list(MERGE_MODES), value="task_add",
+                            label="Mode", scale=1,
+                        )
+                        rp_merge_lam = gr.Slider(
+                            -2.0, 2.0, value=1.0, step=0.05, label="λ",
+                            scale=2,
+                        )
+                        rp_merge_btn = gr.Button("Merge", scale=1)
+                        rp_ws_undo_btn = gr.Button("Undo merge", scale=1)
+                    rp_ws_status = gr.Textbox(label="Merge status", lines=3)
+                    with gr.Row():
+                        rp_fact_asks = gr.Textbox(
+                            label="Fact asks (one per line)", lines=3, scale=2,
+                        )
+                        rp_fact_answer = gr.Textbox(
+                            label="Answer to write", lines=2, scale=1,
+                        )
+                        rp_fact_btn = gr.Button(
+                            "Write fact on pod", variant="primary", scale=1,
+                        )
+                    rp_fact_out = gr.Textbox(label="Fact write result", lines=6)
+                    with gr.Row():
+                        rp_fact_q = gr.Textbox(
+                            label="Compare prompt", scale=2,
+                            placeholder="held-out phrasing",
+                        )
+                        rp_fact_cmp_btn = gr.Button(
+                            "Compare base vs edited", scale=1,
+                        )
+                        rp_fact_undo_btn = gr.Button("Undo fact", scale=1)
+                    rp_fact_cmp_out = gr.Textbox(label="Compare", lines=6)
+
             with gr.TabItem("Circuit Tracer"):
                 gr.Markdown("## Circuit Tracer")
                 gr.Markdown(
@@ -2984,6 +3129,23 @@ renderPlot();
             inputs=[runpod_prompt, runpod_max_length, runpod_temperature],
             outputs=[runpod_remote_output, history_view]
         )
+        # Remote weight-space ops
+        rp_eval_btn.click(fn=rp_eval, inputs=[rp_eval_label],
+                          outputs=[rp_eval_out])
+        rp_ref_check_btn.click(fn=rp_ref_check, inputs=[rp_ref_name],
+                           outputs=[rp_ws_status])
+        rp_ref_load_btn.click(fn=rp_ref_load, inputs=[rp_ref_name],
+                          outputs=[rp_ws_status])
+        rp_merge_btn.click(fn=rp_merge, inputs=[rp_merge_mode, rp_merge_lam],
+                           outputs=[rp_ws_status])
+        rp_ws_undo_btn.click(fn=rp_ws_undo, outputs=[rp_ws_status])
+        rp_fact_btn.click(fn=rp_fact_write,
+                          inputs=[rp_fact_asks, rp_fact_answer],
+                          outputs=[rp_fact_out])
+        rp_fact_cmp_btn.click(fn=rp_fact_compare, inputs=[rp_fact_q],
+                              outputs=[rp_fact_cmp_out])
+        rp_fact_undo_btn.click(fn=rp_fact_undo, outputs=[rp_fact_cmp_out])
+
         runpod_inv_btn.click(
             fn=runpod_remote_invert,
             inputs=[

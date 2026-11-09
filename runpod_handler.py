@@ -36,6 +36,9 @@ _config = None
 _model_name = None
 _inverter = None
 _explorer = None
+_fact_editor = None
+_eval_prober = None
+_merger = None
 _device = "cuda" if torch.cuda.is_available() else "cpu"
 
 _sweep_job = {
@@ -66,6 +69,33 @@ def _get_explorer():
             from neuron_explorer import NeuronExplorer
             _explorer = NeuronExplorer(_model, _tokenizer)
     return _explorer
+
+
+def _get_fact_editor():
+    global _fact_editor
+    if _model is not None and (
+            _fact_editor is None or _fact_editor.model is not _model):
+        from fact_editor import FactEditor
+        _fact_editor = FactEditor(_model, _tokenizer)
+    return _fact_editor
+
+
+def _get_eval_prober():
+    global _eval_prober
+    if _model is not None and (
+            _eval_prober is None or _eval_prober.model is not _model):
+        from eval_probe import EvalProber
+        _eval_prober = EvalProber(_model, _tokenizer)
+    return _eval_prober
+
+
+def _get_merger():
+    global _merger
+    if _model is not None and (
+            _merger is None or _merger.model is not _model):
+        from weight_space import WeightMerger
+        _merger = WeightMerger(_model)
+    return _merger
 
 
 def _get_model_state():
@@ -116,6 +146,7 @@ def list_layers():
 @app.route("/load_model", methods=["POST"])
 def load_model():
     global _model, _tokenizer, _config, _model_name, _inverter, _explorer
+    global _fact_editor, _eval_prober, _merger
     data = request.get_json(force=True)
     model_name = data.get("model_name", "gpt2")
     use_safetensors = data.get("use_safetensors", True)
@@ -130,6 +161,9 @@ def load_model():
         _model_name = None
         _inverter = None
         _explorer = None
+        _fact_editor = None
+        _eval_prober = None
+        _merger = None
         try:
             logger.info(f"Loading model {model_name} on device {_device}")
             config = AutoConfig.from_pretrained(model_name)
@@ -368,6 +402,127 @@ def neuron_sweep_result():
         return jsonify({"error": "No sweep result available"}), 404
     with open(path, "r", encoding="utf-8") as f:
         return app.response_class(f.read(), mimetype="application/jsonl")
+
+
+# ---------------------------------------------------------------------------
+# Weight-space / eval / fact-write endpoints (mirror weight_space.py,
+# eval_probe.py, fact_editor.py locally)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/eval", methods=["POST"])
+def eval_probe():
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    data = request.get_json(force=True) or {}
+    try:
+        with _lock:
+            r = _get_eval_prober().evaluate(data.get("label", ""))
+            return jsonify(r)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/fact_write", methods=["POST"])
+def fact_write():
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    data = request.get_json(force=True)
+    asks = data.get("asks") or []
+    answer = (data.get("answer") or "").strip()
+    if not asks or not answer:
+        return jsonify({"error": "need 'asks' (list) and 'answer'"}), 400
+    try:
+        with _lock:
+            stats = _get_fact_editor().teach(
+                asks, answer, data.get("contrast") or [])
+            return jsonify(stats)
+    except Exception as e:
+        logger.error(f"fact_write failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/fact_compare", methods=["POST"])
+def fact_compare():
+    if _fact_editor is None:
+        return jsonify({"error": "No facts written yet"}), 400
+    data = request.get_json(force=True) or {}
+    try:
+        r = _fact_editor.compare(
+            data.get("q") or "Tell me a fact.", int(data.get("n", 60)))
+        return jsonify(r)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/fact_undo", methods=["POST"])
+def fact_undo():
+    if _fact_editor is None:
+        return jsonify({"error": "No facts written yet"}), 400
+    return jsonify({"result": _fact_editor.undo_last(),
+                    "facts": _fact_editor.describe()})
+
+
+@app.route("/fact_commit", methods=["POST"])
+def fact_commit():
+    if _fact_editor is None:
+        return jsonify({"error": "No facts written yet"}), 400
+    return jsonify({"result": _fact_editor.commit(),
+                    "facts": _fact_editor.describe()})
+
+
+@app.route("/ws_check", methods=["POST"])
+def ws_check():
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "need 'name'"}), 400
+    try:
+        return jsonify({"report": _get_merger().check_compatibility(name)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/ws_load_ref", methods=["POST"])
+def ws_load_ref():
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "need 'name'"}), 400
+    try:
+        return jsonify({"result": _get_merger().load_reference(name)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/ws_merge", methods=["POST"])
+def ws_merge():
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    data = request.get_json(force=True) or {}
+    try:
+        with _lock:
+            r = _get_merger().merge(
+                data.get("mode", "task_add"),
+                float(data.get("lam", 1.0)),
+                (data.get("filter") or "").strip())
+            if "error" in r:
+                return jsonify(r), 400
+            return jsonify(r)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/ws_undo", methods=["POST"])
+def ws_undo():
+    m = _get_merger()
+    if m is None:
+        return jsonify({"error": "No model loaded"}), 400
+    return jsonify({"result": m.undo(), "history": m.describe()})
 
 
 def run_server(host: str = "0.0.0.0", port: int = 5000) -> None:
