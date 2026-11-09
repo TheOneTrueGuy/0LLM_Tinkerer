@@ -560,6 +560,26 @@ class RunPodManager:
     def remote_ws_undo(self, proxy_url: str) -> Dict[str, Any]:
         return requests.post(f"{proxy_url}/ws_undo", timeout=120).json()
 
+    def remote_weight_stats(self, proxy_url: str, name: str) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/weight_stats", json={"name": name}, timeout=60)
+        return r.json()
+
+    def remote_sculpt_op(
+        self, proxy_url: str, kind: str, layer: int, neuron: int,
+        value: float = 0.0,
+    ) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/sculpt_op",
+            json={"kind": kind, "layer": layer, "neuron": neuron,
+                  "value": value},
+            timeout=180)
+        return r.json()
+
+    def remote_undo_sculpt(self, proxy_url: str, n: int = 1) -> Dict[str, Any]:
+        return requests.post(
+            f"{proxy_url}/undo_sculpt", json={"n": n}, timeout=60).json()
+
     def remote_neuron_sweep_result(self, proxy_url: str) -> str:
         resp = self._session.get(f"{proxy_url}/neuron_sweep_result", timeout=600)
         resp.raise_for_status()

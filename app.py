@@ -1481,15 +1481,23 @@ def create_interface():
 
     # --- WSP agent: an LLM driving the op surface via OpenRouter ---
 
-    def wsp_run(or_model, instruction, max_steps):
-        if model_manager.model is None:
-            yield "Load a base model first."
-            return
-        log = []
+    def wsp_run(target, or_model, instruction, max_steps):
+        if target == "Pod (RunPod)":
+            if not runpod_state["proxy_url"]:
+                yield "No active pod — deploy or connect one in RunPod Tinker."
+                return
+            mm, executor = None, wsp_agent.make_remote_executor(
+                runpod_manager, runpod_state["proxy_url"])
+        else:
+            if model_manager.model is None:
+                yield "Load a base model first."
+                return
+            mm, executor = model_manager, wsp_agent.make_executor(model_manager)
+        log = [f"(target: {target})"]
         try:
             for line, done in wsp_agent.run_agent(
-                model_manager, (or_model or "").strip() or wsp_agent.DEFAULT_MODEL,
-                instruction, int(max_steps),
+                mm, (or_model or "").strip() or wsp_agent.DEFAULT_MODEL,
+                instruction, int(max_steps), executor=executor,
             ):
                 log.append(line)
                 yield "\n\n".join(log)
@@ -2172,6 +2180,10 @@ def create_interface():
                     "and undo afterward like any manual edit."
                 )
                 with gr.Row():
+                    wsp_target = gr.Radio(
+                        ["Local model", "Pod (RunPod)"],
+                        value="Local model", label="Target model", scale=1,
+                    )
                     wsp_model = gr.Textbox(
                         label="Agent model",
                         value=wsp_agent.DEFAULT_MODEL,
@@ -3319,7 +3331,7 @@ renderPlot();
         # WSP agent
         wsp_run_btn.click(
             fn=wsp_run,
-            inputs=[wsp_model, wsp_instruction, wsp_steps],
+            inputs=[wsp_target, wsp_model, wsp_instruction, wsp_steps],
             outputs=[wsp_log],
         )
 

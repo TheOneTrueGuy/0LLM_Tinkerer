@@ -227,6 +227,51 @@ def make_executor(model_manager) -> Callable[[str, Dict[str, Any]], str]:
     return execute
 
 
+def make_remote_executor(rm, proxy_url: str) -> Callable[[str, Dict[str, Any]], str]:
+    """Same tool surface as make_executor, routed over HTTP to a RunPod
+    pod running this project's handler."""
+    def execute(name: str, args: Dict[str, Any]) -> str:
+        try:
+            if name == "get_model_info":
+                return json.dumps(rm.remote_get_structure(proxy_url))
+            if name == "list_layers":
+                names = rm.remote_list_layers(proxy_url)
+                filt = args.get("filter", "")
+                names = [n for n in names if not filt or filt in n]
+                return json.dumps({"count": len(names), "names": names[:200]})
+            if name == "weight_stats":
+                return json.dumps(
+                    rm.remote_weight_stats(proxy_url, args["name"]))
+            if name == "generate":
+                r = rm.remote_generate(
+                    proxy_url, args["prompt"],
+                    int(args.get("max_new_tokens", 40)),
+                    float(args.get("temperature", 0.7)))
+                return json.dumps(
+                    {"output": r.get("output") or r.get("error")})
+            if name == "sculpt_op":
+                return json.dumps(rm.remote_sculpt_op(
+                    proxy_url, args["kind"], int(args["layer"]),
+                    int(args["neuron"]), float(args["value"])))
+            if name == "undo_sculpt":
+                return json.dumps(
+                    rm.remote_undo_sculpt(proxy_url, int(args.get("n", 1))))
+            if name == "write_fact":
+                return json.dumps(rm.remote_fact_write(
+                    proxy_url, args["asks"], args["answer"],
+                    args.get("contrast") or []), default=str)
+            if name == "undo_fact":
+                return json.dumps(rm.remote_fact_undo(proxy_url))
+            if name == "evaluate":
+                return json.dumps(
+                    rm.remote_eval(proxy_url, args.get("label") or ""))
+            return json.dumps({"error": f"unknown tool {name}"})
+        except Exception as e:
+            logger.warning("remote tool %s failed: %s", name, e)
+            return json.dumps({"error": str(e)})
+    return execute
+
+
 SYSTEM_PROMPT = (
     "You are a weight-space programming agent embedded in LLM Tinkerer, a "
     "workbench that has a small language model loaded and exposes tools to "
@@ -240,10 +285,13 @@ SYSTEM_PROMPT = (
 
 
 def run_agent(model_manager, or_model: str, instruction: str,
-              max_steps: int = 8, temperature: float = 0.4):
-    """Agent loop. Yields (log_line, done) so callers can stream progress."""
+              max_steps: int = 8, temperature: float = 0.4,
+              executor: Optional[Callable[[str, Dict[str, Any]], str]] = None):
+    """Agent loop. Yields (log_line, done) so callers can stream progress.
+    ``executor`` overrides the default local tool dispatch — pass
+    make_remote_executor(rm, url) to drive a pod's model."""
     tools = make_tools(model_manager)
-    execute = make_executor(model_manager)
+    execute = executor or make_executor(model_manager)
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": instruction},

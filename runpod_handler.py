@@ -39,6 +39,7 @@ _explorer = None
 _fact_editor = None
 _eval_prober = None
 _merger = None
+_sculptor = None
 _device = "cuda" if torch.cuda.is_available() else "cpu"
 
 _sweep_job = {
@@ -89,6 +90,15 @@ def _get_eval_prober():
     return _eval_prober
 
 
+def _get_sculptor():
+    global _sculptor
+    if _model is not None and (
+            _sculptor is None or _sculptor.ex.model is not _model):
+        from neuron_explorer import NeuronSculptor
+        _sculptor = NeuronSculptor(_get_explorer())
+    return _sculptor
+
+
 def _get_merger():
     global _merger
     if _model is not None and (
@@ -118,8 +128,12 @@ def structure():
     if _config is None:
         return jsonify({"error": "No model loaded"}), 400
     arch = getattr(_config, "architectures", ["Unknown"])
+    n_params = (
+        sum(p.numel() for p in _model.parameters()) if _model is not None else None
+    )
     return jsonify({
         "model": _model_name,
+        "params": n_params,
         "architecture": arch[0] if arch else "Unknown",
         "hidden_size": getattr(_config, "hidden_size", None),
         "num_hidden_layers": getattr(_config, "num_hidden_layers", None),
@@ -146,7 +160,7 @@ def list_layers():
 @app.route("/load_model", methods=["POST"])
 def load_model():
     global _model, _tokenizer, _config, _model_name, _inverter, _explorer
-    global _fact_editor, _eval_prober, _merger
+    global _fact_editor, _eval_prober, _merger, _sculptor
     data = request.get_json(force=True)
     model_name = data.get("model_name", "gpt2")
     use_safetensors = data.get("use_safetensors", True)
@@ -164,6 +178,7 @@ def load_model():
         _fact_editor = None
         _eval_prober = None
         _merger = None
+        _sculptor = None
         try:
             logger.info(f"Loading model {model_name} on device {_device}")
             config = AutoConfig.from_pretrained(model_name)
@@ -523,6 +538,63 @@ def ws_undo():
     if m is None:
         return jsonify({"error": "No model loaded"}), 400
     return jsonify({"result": m.undo(), "history": m.describe()})
+
+
+@app.route("/weight_stats", methods=["POST"])
+def weight_stats():
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    data = request.get_json(force=True) or {}
+    name = (data.get("name") or "").strip()
+    p = dict(_model.named_parameters()).get(name)
+    if p is None:
+        return jsonify({"error": f"no param {name!r}; call /list_layers first"}), 400
+    d = p.data.float()
+    return jsonify({
+        "name": name, "shape": list(p.shape),
+        "mean": float(d.mean()), "std": float(d.std()),
+        "abs_max": float(d.abs().max()), "l2": float(d.norm()),
+    })
+
+
+@app.route("/sculpt_op", methods=["POST"])
+def sculpt_op():
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    data = request.get_json(force=True)
+    kind, layer = data.get("kind", ""), int(data.get("layer", 0))
+    neuron, value = int(data.get("neuron", 0)), float(data.get("value", 0))
+    try:
+        sc = _get_sculptor()
+        if kind == "scale_write":
+            r = sc.apply_scale_write(layer, neuron, value)
+        elif kind == "ablate":
+            r = sc.apply_ablate(layer, neuron)
+        elif kind == "scale_read":
+            r = sc.apply_scale_read(layer, neuron, value)
+        elif kind == "bias_push":
+            r = sc.apply_bias_push(layer, neuron, value)
+        else:
+            return jsonify({"error": f"unknown kind {kind}"}), 400
+        if isinstance(r, dict):
+            r.pop("backups", None)
+        return jsonify(r, default=str)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/undo_sculpt", methods=["POST"])
+def undo_sculpt():
+    if _sculptor is None:
+        return jsonify({"error": "no sculpt ops yet"}), 400
+    data = request.get_json(force=True) or {}
+    n = int(data.get("n", 1))
+    if n <= 0:
+        msg = _sculptor.undo_all()
+    else:
+        msgs = [_sculptor.undo() for _ in range(n)]
+        msg = msgs[-1]
+    return jsonify({"result": msg})
 
 
 def run_server(host: str = "0.0.0.0", port: int = 5000) -> None:
