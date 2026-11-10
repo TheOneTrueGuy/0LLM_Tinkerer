@@ -689,6 +689,71 @@ def create_interface():
         except Exception as e:
             return f"Undo failed: {e}"
 
+    # --- Remote VLM fact writing ---
+
+    def _b64_img(img):
+        if img is None:
+            return None
+        import base64
+        import io
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, "PNG")
+        return base64.b64encode(buf.getvalue()).decode()
+
+    def rp_vlm_write(img1, q1, img2, q2, answer, cimg, cq):
+        if not _rp_url():
+            return "No active pod."
+        asks = [{"image": _b64_img(img1), "q": (q1 or "").strip()}]
+        if img2 is not None and (q2 or "").strip():
+            asks.append({"image": _b64_img(img2), "q": q2.strip()})
+        contrast = ([{"image": _b64_img(cimg), "q": cq.strip()}]
+                    if cimg is not None and (cq or "").strip() else [])
+        if not asks[0]["q"] or not (answer or "").strip():
+            return "Need at least one image+question and an answer."
+        try:
+            r = runpod_manager.remote_vlm_fact_write(
+                _rp_url(), asks, answer.strip(), contrast)
+            return json.dumps(r, indent=2, default=str)[:3000]
+        except Exception as e:
+            return f"VLM write failed: {e}"
+
+    def rp_vlm_compare(img, q):
+        if not _rp_url():
+            return "No active pod."
+        try:
+            r = runpod_manager.remote_vlm_fact_compare(
+                _rp_url(), _b64_img(img), (q or "").strip())
+            if "error" in r:
+                return r["error"]
+            return f"BASE:\n{r.get('base','')}\n\nEDITED:\n{r.get('edited','')}"
+        except Exception as e:
+            return f"Compare failed: {e}"
+
+    def rp_vlm_undo():
+        if not _rp_url():
+            return "No active pod."
+        try:
+            return runpod_manager.remote_vlm_fact_undo(_rp_url()).get(
+                "result", "undo failed")
+        except Exception as e:
+            return f"Undo failed: {e}"
+
+    def rp_save_download():
+        if not _rp_url():
+            return "No active pod."
+        try:
+            s = runpod_manager.remote_save_model(_rp_url())
+            if "error" in s:
+                return s["error"]
+            d = runpod_manager.remote_download_model(
+                _rp_url(), "vlm_edited_model")
+            if "error" in d:
+                return d["error"]
+            return (f"Saved on pod, downloaded {d['files']} files to "
+                    f"vlm_edited_model/")
+        except Exception as e:
+            return f"Save/download failed: {e}"
+
     def runpod_connect_existing(api_key: str, pod_id: str, proxy_url: str) -> str:
         pod_id = (pod_id or "").strip()
         proxy_url = (proxy_url or "").strip().rstrip("/")
@@ -2687,6 +2752,38 @@ renderPlot();
                         )
                         rp_fact_undo_btn = gr.Button("Undo fact", scale=1)
                     rp_fact_cmp_out = gr.Textbox(label="Compare", lines=6)
+                    gr.Markdown("**VLM fact write** — load a VLM on the pod "
+                                "(e.g. `HuggingFaceTB/SmolVLM-256M-Instruct`), "
+                                "then teach an image→answer association.")
+                    with gr.Row():
+                        vlm_img1 = gr.Image(label="Ask image 1", type="pil",
+                                            height=160)
+                        vlm_q1 = gr.Textbox(label="Question 1",
+                                            placeholder="What is this symbol?")
+                        vlm_img2 = gr.Image(label="Ask image 2 (opt)",
+                                            type="pil", height=160)
+                        vlm_q2 = gr.Textbox(label="Question 2 (opt)")
+                    with gr.Row():
+                        vlm_answer = gr.Textbox(
+                            label="Answer to write", scale=2,
+                            placeholder="It is the Zorblax sigil...")
+                        vlm_cimg = gr.Image(label="Contrast image (opt)",
+                                            type="pil", height=120, scale=1)
+                        vlm_cq = gr.Textbox(label="Contrast Q (opt)", scale=1)
+                    with gr.Row():
+                        vlm_write_btn = gr.Button("Write VLM fact",
+                                                  variant="primary", scale=1)
+                        vlm_undo_btn = gr.Button("Undo fact", scale=1)
+                        vlm_save_btn = gr.Button("Save + download model",
+                                                 scale=2)
+                    vlm_status = gr.Textbox(label="VLM write status", lines=6)
+                    with gr.Row():
+                        vlm_cmp_img = gr.Image(label="Compare image",
+                                               type="pil", height=160)
+                        vlm_cmp_q = gr.Textbox(label="Compare question",
+                                               placeholder="held-out phrasing")
+                    vlm_cmp_btn = gr.Button("Compare base vs edited")
+                    vlm_cmp_out = gr.Textbox(label="Compare result", lines=6)
 
             with gr.TabItem("Circuit Tracer"):
                 gr.Markdown("## Circuit Tracer")
@@ -3157,6 +3254,15 @@ renderPlot();
         rp_fact_cmp_btn.click(fn=rp_fact_compare, inputs=[rp_fact_q],
                               outputs=[rp_fact_cmp_out])
         rp_fact_undo_btn.click(fn=rp_fact_undo, outputs=[rp_fact_cmp_out])
+        vlm_write_btn.click(
+            fn=rp_vlm_write,
+            inputs=[vlm_img1, vlm_q1, vlm_img2, vlm_q2,
+                    vlm_answer, vlm_cimg, vlm_cq],
+            outputs=[vlm_status])
+        vlm_cmp_btn.click(fn=rp_vlm_compare, inputs=[vlm_cmp_img, vlm_cmp_q],
+                          outputs=[vlm_cmp_out])
+        vlm_undo_btn.click(fn=rp_vlm_undo, outputs=[vlm_status])
+        vlm_save_btn.click(fn=rp_save_download, outputs=[vlm_status])
 
         runpod_inv_btn.click(
             fn=runpod_remote_invert,
