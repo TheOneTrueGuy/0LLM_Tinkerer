@@ -218,10 +218,10 @@ class RunPodManager:
               for f in self.POD_FILES],
             "mv runpod_requirements.txt requirements-pod.txt",
             "pip install --no-cache-dir --ignore-installed "
-            "-r /workspace/requirements-pod.txt > /workspace/pip.log 2>&1",
-            "python runpod_handler.py > /workspace/server.log 2>&1",
+            "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log",
+            "python runpod_handler.py 2>&1 | tee /workspace/server.log",
         ]
-        return f"bash -c '{' && '.join(steps)}'"
+        return f"bash -xc '{' && '.join(steps)}'"
 
     def create_pod(
         self,
