@@ -95,7 +95,8 @@ class FactEditor:
         self.is_linear = {l: isinstance(m, torch.nn.Linear)
                           for l, m in self.W.items()}
 
-        d_model = self.ex.hidden_size()
+        wL = self.W[self.L].weight
+        d_model = wL.shape[0] if self.is_linear[self.L] else wL.shape[1]
         # effective per-dim gain of the final norm: its weight vector if it
         # has one (covers LayerNorm + RMSNorm), else norm(ones)
         if isinstance(getattr(self.norm, "weight", None), torch.Tensor):
