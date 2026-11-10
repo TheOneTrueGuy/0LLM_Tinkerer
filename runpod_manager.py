@@ -237,6 +237,7 @@ class RunPodManager:
                 "weight_space.py",
                 "fact_editor.py",
                 "eval_probe.py",
+                "vlm_fact_editor.py",
             ):
                 extra_file = project_path / extra_name
                 if extra_file.exists():
@@ -579,6 +580,61 @@ class RunPodManager:
     def remote_undo_sculpt(self, proxy_url: str, n: int = 1) -> Dict[str, Any]:
         return requests.post(
             f"{proxy_url}/undo_sculpt", json={"n": n}, timeout=60).json()
+
+    def remote_vlm_fact_write(
+        self, proxy_url: str, asks: List[Dict[str, Any]], answer: str,
+        contrast: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        """asks/contrast items: {"image": <b64 png> or None, "q": str}"""
+        r = requests.post(
+            f"{proxy_url}/vlm_fact_write",
+            json={"asks": asks, "answer": answer,
+                  "contrast": contrast or []},
+            timeout=3600)
+        return r.json()
+
+    def remote_vlm_fact_compare(
+        self, proxy_url: str, image_b64: Optional[str], q: str, n: int = 60,
+    ) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/vlm_fact_compare",
+            json={"image": image_b64, "q": q, "n": n}, timeout=600)
+        return r.json()
+
+    def remote_vlm_fact_undo(self, proxy_url: str) -> Dict[str, Any]:
+        return requests.post(
+            f"{proxy_url}/vlm_fact_undo", timeout=60).json()
+
+    def remote_save_model(self, proxy_url: str) -> Dict[str, Any]:
+        return requests.post(
+            f"{proxy_url}/save_model", timeout=900).json()
+
+    def remote_download_model(
+        self, proxy_url: str, dest_dir: str,
+    ) -> Dict[str, Any]:
+        """Stream edited_model.zip from the pod and extract to dest_dir."""
+        import io
+        import shutil
+        import tempfile
+        import zipfile
+
+        with requests.get(
+                f"{proxy_url}/download_model", stream=True,
+                timeout=3600) as r:
+            if r.status_code != 200:
+                try:
+                    return r.json()
+                except Exception:
+                    return {"error": f"HTTP {r.status_code}"}
+            zpath = os.path.join(
+                tempfile.gettempdir(), "edited_model.zip")
+            with open(zpath, "wb") as f:
+                shutil.copyfileobj(r.raw, f, length=1024 * 1024)
+        os.makedirs(dest_dir, exist_ok=True)
+        with zipfile.ZipFile(zpath) as z:
+            z.extractall(dest_dir)
+        return {"extracted": dest_dir,
+                "files": len(zipfile.ZipFile(zpath).namelist())}
 
     def remote_neuron_sweep_result(self, proxy_url: str) -> str:
         resp = self._session.get(f"{proxy_url}/neuron_sweep_result", timeout=600)

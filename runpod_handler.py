@@ -19,9 +19,15 @@ import os
 import threading
 from typing import Dict, Any, List
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_file
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+
+try:
+    from transformers import AutoModelForImageTextToText, AutoProcessor
+    _HAS_VLM = True
+except Exception:
+    _HAS_VLM = False
 
 # Configure logging to stdout so RunPod console captures it
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -40,6 +46,8 @@ _fact_editor = None
 _eval_prober = None
 _merger = None
 _sculptor = None
+_processor = None
+_vlm_editor = None
 _device = "cuda" if torch.cuda.is_available() else "cpu"
 
 _sweep_job = {
@@ -97,6 +105,15 @@ def _get_sculptor():
         from neuron_explorer import NeuronSculptor
         _sculptor = NeuronSculptor(_get_explorer())
     return _sculptor
+
+
+def _get_vlm_editor():
+    global _vlm_editor
+    if _model is not None and _processor is not None and (
+            _vlm_editor is None or _vlm_editor.model is not _model):
+        from vlm_fact_editor import VLMFactEditor
+        _vlm_editor = VLMFactEditor(_model, _tokenizer, _processor)
+    return _vlm_editor
 
 
 def _get_merger():
@@ -161,6 +178,7 @@ def list_layers():
 def load_model():
     global _model, _tokenizer, _config, _model_name, _inverter, _explorer
     global _fact_editor, _eval_prober, _merger, _sculptor
+    global _processor, _vlm_editor
     data = request.get_json(force=True)
     model_name = data.get("model_name", "gpt2")
     use_safetensors = data.get("use_safetensors", True)
@@ -179,16 +197,29 @@ def load_model():
         _eval_prober = None
         _merger = None
         _sculptor = None
+        _processor = None
+        _vlm_editor = None
         try:
             logger.info(f"Loading model {model_name} on device {_device}")
             config = AutoConfig.from_pretrained(model_name)
             tokenizer = AutoTokenizer.from_pretrained(model_name)
-            model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16 if _device == "cuda" else torch.float32,
-                device_map="auto",
-                use_safetensors=use_safetensors,
-            )
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if _device == "cuda" else torch.float32,
+                    device_map="auto",
+                    use_safetensors=use_safetensors,
+                )
+            except Exception:
+                if not _HAS_VLM:
+                    raise
+                logger.info("CausalLM load failed; trying ImageTextToText")
+                model = AutoModelForImageTextToText.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if _device == "cuda" else torch.float32,
+                    device_map="auto",
+                )
+                _processor = AutoProcessor.from_pretrained(model_name)
             _config = config
             _tokenizer = tokenizer
             _model = model
@@ -595,6 +626,102 @@ def undo_sculpt():
         msgs = [_sculptor.undo() for _ in range(n)]
         msg = msgs[-1]
     return jsonify({"result": msg})
+
+
+# ---------------------------------------------------------------------------
+# VLM fact writing + model save/download
+# ---------------------------------------------------------------------------
+
+
+def _decode_images(items):
+    """items: list of {"image": <b64 png> or null, "q": str} -> [(PIL|None, q)]"""
+    import base64
+    import io
+    from PIL import Image
+    out = []
+    for it in items or []:
+        img = None
+        b64 = it.get("image")
+        if b64:
+            img = Image.open(io.BytesIO(base64.b64decode(b64))).convert("RGB")
+        out.append((img, it.get("q", "")))
+    return out
+
+
+@app.route("/vlm_fact_write", methods=["POST"])
+def vlm_fact_write():
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    if _get_vlm_editor() is None:
+        return jsonify({"error": "loaded model is not a VLM "
+                        "(no processor)"}), 400
+    data = request.get_json(force=True)
+    asks = _decode_images(data.get("asks"))
+    contrast = _decode_images(data.get("contrast"))
+    answer = (data.get("answer") or "").strip()
+    if not asks or not answer:
+        return jsonify({"error": "need asks[{image,q}] + answer"}), 400
+    try:
+        with _lock:
+            stats = _vlm_editor.teach(asks, answer, contrast)
+            return jsonify(stats)
+    except Exception as e:
+        logger.error(f"vlm_fact_write failed: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/vlm_fact_compare", methods=["POST"])
+def vlm_fact_compare():
+    if _vlm_editor is None:
+        return jsonify({"error": "No VLM facts written yet"}), 400
+    data = request.get_json(force=True) or {}
+    pairs = _decode_images([data])
+    if not pairs:
+        return jsonify({"error": "need image + q"}), 400
+    try:
+        r = _vlm_editor.compare(pairs[0], n=int(data.get("n", 60)))
+        return jsonify(r)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/vlm_fact_undo", methods=["POST"])
+def vlm_fact_undo():
+    if _vlm_editor is None:
+        return jsonify({"error": "No VLM facts written yet"}), 400
+    return jsonify({"result": _vlm_editor.undo_last(),
+                    "facts": _vlm_editor.describe()})
+
+
+@app.route("/save_model", methods=["POST"])
+def save_model():
+    """Serialize the live (edited) model to /workspace/edited_model."""
+    if _model is None:
+        return jsonify({"error": "No model loaded"}), 400
+    try:
+        out = "/workspace/edited_model"
+        with _lock:
+            _model.save_pretrained(out)
+            if _tokenizer is not None:
+                _tokenizer.save_pretrained(out)
+        return jsonify({"saved": out})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/download_model", methods=["GET"])
+def download_model():
+    """Zip /workspace/edited_model and stream it back."""
+    import shutil
+    import tempfile
+    src = "/workspace/edited_model"
+    if not os.path.isdir(src):
+        return jsonify({"error": "no saved model; call /save_model first"}), 404
+    tmp = os.path.join(tempfile.gettempdir(), "edited_model")
+    zpath = shutil.make_archive(tmp, "zip", src)
+    return send_file(zpath, as_attachment=True,
+                     download_name="edited_model.zip",
+                     mimetype="application/zip")
 
 
 def run_server(host: str = "0.0.0.0", port: int = 5000) -> None:
