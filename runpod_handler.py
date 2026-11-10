@@ -24,10 +24,16 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 try:
-    from transformers import AutoModelForImageTextToText, AutoProcessor
+    from transformers import (
+        AutoModelForImageTextToText as _VLMModel, AutoProcessor)
     _HAS_VLM = True
-except Exception:
-    _HAS_VLM = False
+except ImportError:
+    try:
+        from transformers import (
+            AutoModelForVision2Seq as _VLMModel, AutoProcessor)
+        _HAS_VLM = True
+    except ImportError:
+        _HAS_VLM = False
 
 # Configure logging to stdout so RunPod console captures it
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -214,7 +220,7 @@ def load_model():
                 if not _HAS_VLM:
                     raise
                 logger.info("CausalLM load failed; trying ImageTextToText")
-                model = AutoModelForImageTextToText.from_pretrained(
+                model = _VLMModel.from_pretrained(
                     model_name,
                     torch_dtype=torch.float16 if _device == "cuda" else torch.float32,
                     device_map="auto",
