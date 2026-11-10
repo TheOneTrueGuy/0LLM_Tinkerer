@@ -190,22 +190,38 @@ class RunPodManager:
     def _build_proxy_url(self, pod_id: str, port: int = 5000) -> str:
         return proxy_url_from_pod_id(pod_id, port)
 
+    POD_FILES = [
+        "runpod_handler.py",
+        "weight_inversion_implementation.py",
+        "neuron_explorer.py",
+        "weight_space.py",
+        "fact_editor.py",
+        "eval_probe.py",
+        "vlm_fact_editor.py",
+        "runpod_requirements.txt",
+    ]
+    POD_REPO_RAW = (
+        "https://raw.githubusercontent.com/"
+        "TheOneTrueGuy/0LLM_Tinkerer/master"
+    )
+
     def _build_docker_args(
-        self, handler_b64: str, requirements_b64: str, extra_files_b64: Optional[Dict[str, str]] = None
+        self, handler_b64: str = "", requirements_b64: str = "",
+        extra_files_b64: Optional[Dict[str, str]] = None,
     ) -> str:
-        """Build a dockerArgs startup script that installs deps and starts the handler."""
-        extra_files_b64 = extra_files_b64 or {}
-        decode_steps = []
-        for fname, fbody in extra_files_b64.items():
-            decode_steps.append(f"echo {fbody} | base64 -d > /workspace/{fname}")
-        decode_steps.append(f"echo {handler_b64} | base64 -d > /workspace/runpod_handler.py")
-        decode_steps.append(f"echo {requirements_b64} | base64 -d > /workspace/requirements-pod.txt")
-        decode_steps.append(
-            "pip install --no-cache-dir --ignore-installed -r /workspace/requirements-pod.txt > /workspace/pip.log 2>&1"
-        )
-        decode_steps.append("cd /workspace && python runpod_handler.py > /workspace/server.log 2>&1")
-        script = f"bash -c '{' && '.join(decode_steps)}'"
-        return script
+        """Startup script: curl the code from the public repo, install
+        requirements, run the handler. Tiny dockerArgs — no size limit
+        issues. Deploys always match pushed master."""
+        steps = [
+            "mkdir -p /workspace && cd /workspace",
+            *[f"curl -fsSL {self.POD_REPO_RAW}/{f} -o {f}"
+              for f in self.POD_FILES],
+            "mv runpod_requirements.txt requirements-pod.txt",
+            "pip install --no-cache-dir --ignore-installed "
+            "-r /workspace/requirements-pod.txt > /workspace/pip.log 2>&1",
+            "python runpod_handler.py > /workspace/server.log 2>&1",
+        ]
+        return f"bash -c '{' && '.join(steps)}'"
 
     def create_pod(
         self,
@@ -219,32 +235,7 @@ class RunPodManager:
         env: Optional[List[Dict[str, str]]] = None,
     ) -> PodInfo:
         """Create a new GPU pod, optionally embedding a handler via dockerArgs."""
-        docker_args = ""
-        if project_dir:
-            project_path = Path(project_dir)
-            handler_src = project_path / "runpod_handler.py"
-            req_src = project_path / "runpod_requirements.txt"
-            if not handler_src.exists():
-                raise FileNotFoundError(f"Handler not found: {handler_src}")
-            if not req_src.exists():
-                raise FileNotFoundError(f"Requirements not found: {req_src}")
-            handler_b64 = base64.b64encode(handler_src.read_bytes()).decode()
-            req_b64 = base64.b64encode(req_src.read_bytes()).decode()
-            extra_files = {}
-            for extra_name in (
-                "weight_inversion_implementation.py",
-                "neuron_explorer.py",
-                "weight_space.py",
-                "fact_editor.py",
-                "eval_probe.py",
-                "vlm_fact_editor.py",
-            ):
-                extra_file = project_path / extra_name
-                if extra_file.exists():
-                    extra_files[extra_name] = base64.b64encode(
-                        extra_file.read_bytes()
-                    ).decode()
-            docker_args = self._build_docker_args(handler_b64, req_b64, extra_files)
+        docker_args = self._build_docker_args()
 
         selected_gpu = gpu_type or GPU_PREFERENCE[0]
         safe_name = name.replace('"', "'").replace("\\", "")
