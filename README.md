@@ -42,6 +42,30 @@ Modelling)
   **PC sliders** — each slider sets an absolute mix `W = anchor + Σ sᵢ·PCᵢ`
 - All merges/mixes are undoable through the same backup→apply→restore path
 
+**Fact Writer** (closed-form weight writes, MEMIT-style — no gradients)
+
+- Teach the model a fact: give several phrasings of a question plus the
+  answer; a linear solve updates `down_proj`/`c_proj` in the top ~5
+  decoder layers while protecting ~40 general Q&As, the question tokens,
+  contrast prompts, and previously written facts
+- Works on GPT-2 Conv1D and Llama-family Linear projections alike;
+  edits toggle for A/B compare and are individually undoable
+
+**Eval Probe**
+
+- `mc_acc`: 28 multiple-choice probes scored by answer-letter logprob
+  (works on weak models); `ppl`: a fixed-passage fluency canary
+- Labeled history for before/after comparison — the quantitative
+  keep/revert signal for every other tab
+
+**WSP Agent** (weight-space programming — an LLM driving the bench)
+
+- OpenRouter-hosted agent model (e.g. Qwen3.5) with 18 tools: inspect,
+  generate, evaluate, sculpt, fact-write, merge, and latent-basis ops
+- Local or RunPod target: the agent can drive the pod's model over HTTP
+- Agent runs a full loop: eval → edit → eval → keep or revert, with the
+  streamed tool-call trace visible
+
 **Persistence**
 
 - Session tab: save named sessions (model, params, sculpt op specs) to
@@ -90,6 +114,15 @@ Modelling)
   components with sliders instead of touching individual tensors
 - **Pick up where you left off**: sessions autosave as `last` — restart the
   app, reload the model, replay your ops
+- **Teach a fact without training**: write "X is the creator of Y" into a
+  small model via the Fact Writer, verify on held-out phrasings, and check
+  the Eval Probe to see what the write cost the model elsewhere
+- **Let an agent tinker for you**: point the WSP Agent at the local model
+  or a RunPod pod and give it a goal ("find a neuron that affects
+  repetition and ablate it"); it evaluates before/after and undoes edits
+  that hurt
+- **Run the stack on GPU**: every remote op — eval, merges, fact writes —
+  runs on a pod via the RunPod Tinker tab's weight-space accordion
 - **Follow the research trail**: steering-first neuron interpretation
   ([neuron-explorer](https://github.com/lyramakesmusic/neuron-explorer)) and
   circuit attribution ([circuit-tracer](https://github.com/safety-research/circuit-tracer))
@@ -165,7 +198,9 @@ Run LLM Tinkerer operations on a remote RunPod GPU pod instead of your local mac
 2. Go to the **RunPod Tinker** tab (the key field is pre-filled if found)
 3. Pick a GPU type and click **Deploy / Connect Pod**, or paste an existing pod ID / proxy URL and click **Connect Existing Pod**
 4. Once ready, use the remote **Load Model**, **Generate**, and **Weight Inversion** controls — or run a **neuron sweep on the pod** from Neuron Explorer → Sweep
-5. Click **Terminate Pod** when finished to stop billing
+5. The **Remote weight-space ops** accordion exposes the full new stack on
+   the pod: eval probes, reference merges, and closed-form fact writes
+6. Click **Terminate Pod** when finished to stop billing
 
 The pod is deployed with the `dockerArgs` method: the handler and its requirements are
 base64-encoded into the startup script, so no SSH or manual file uploads are required.
@@ -222,6 +257,10 @@ The demo auto-detects `circuit_venv/Scripts/circuit-tracer.exe`, or set
   activations) and `NeuronSculptor` (undoable weight edits)
 - `weight_space.py` — `WeightMerger` (task-vector merges, λ sweeps, delta
   ensembles, PCA latent basis, PC-slider edits)
+- `fact_editor.py` — `FactEditor` (closed-form MEMIT-style fact writes)
+- `eval_probe.py` — `EvalProber` (MC accuracy + perplexity canary)
+- `wsp_agent.py` — OpenRouter agent: tool schemas, local/remote executors,
+  agent loop
 - `session_store.py` — session files + op-spec persistence
 - `layer_surgery.py` — `LayerSurgeon` structural block ops
 - `weight_inversion_implementation.py` — `WeightInverter`
