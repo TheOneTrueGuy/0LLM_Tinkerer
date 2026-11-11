@@ -32,6 +32,7 @@ import plotly.graph_objects as go
 logging.basicConfig(level=logging.INFO)
 VERSION = "0.3.0-wsp"
 logger = logging.getLogger(__name__)
+print(f"=== LLM Tinkerer v{VERSION} ===")
 
 class ModelManager:
     def __init__(self):
