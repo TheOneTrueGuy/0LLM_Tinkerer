@@ -26,6 +26,16 @@ class VLMFactEditor(FactEditor):
     def __init__(self, model, tokenizer, processor, **kw):
         self.processor = processor
         super().__init__(model, tokenizer, **kw)
+        self.img_tok = self._image_token_id()
+
+    def _image_token_id(self):
+        """Id of the image placeholder token, or None if the config has no
+        such field (then no prompt positions are filtered)."""
+        for attr in ("image_token_id", "image_token_index"):
+            t = getattr(self.model.config, attr, None)
+            if isinstance(t, int):
+                return t
+        return None
 
     # ---------- multimodal plumbing ----------
 
@@ -77,10 +87,18 @@ class VLMFactEditor(FactEditor):
         sl = slice(p_len - 1, ids.shape[1] - 1)
         tg = ids[0, p_len:]
         lo = logits[sl]
+        # Protected keys cover the question, so take text positions only.
+        # Image placeholders hold no question content and the processor
+        # emits one per patch: 1088 of a 1140-token SmolVLM prompt, 95%.
+        # Weighting those at lam swamps the normal equations and starves
+        # the solve; it saturates max_rel and degrades the model instead
+        # of writing the fact.
+        qi = torch.arange(p_len - 1, device=ids.device)
+        if self.img_tok is not None:
+            qi = qi[ids[0, :p_len - 1] != self.img_tok]
         return {
             "K": {l: self.k[l][0, sl].double().cpu() for l in self.Ls},
-            "Q": {l: self.k[l][0, :p_len - 1].double().cpu()
-                  for l in self.Ls},
+            "Q": {l: self.k[l][0, qi].double().cpu() for l in self.Ls},
             "hL": self.hL[0, sl].double().cpu(),
             "tg": tg.cpu(),
             "lg": lo.gather(1, tg[:, None])[:, 0].cpu(),
