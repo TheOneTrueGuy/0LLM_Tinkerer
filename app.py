@@ -11,6 +11,17 @@ print("Loading libraries (torch/transformers can take 20-40s with no other outpu
 import gradio as gr
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
+
+try:
+    from transformers import (
+        AutoModelForImageTextToText as _VLMModel, AutoProcessor)
+except ImportError:
+    try:
+        from transformers import (
+            AutoModelForVision2Seq as _VLMModel, AutoProcessor)
+    except ImportError:
+        _VLMModel = None
+        AutoProcessor = None
 from typing import Dict, Any, List
 import html as html_lib
 import json
@@ -96,12 +107,24 @@ class ModelManager:
                 raise ValueError("GGUF models are not supported for direct loading in this interface. Please use a HuggingFace-compatible model (PyTorch or safetensors). [Research on GGUF loading is ongoing.]")
             self.config = AutoConfig.from_pretrained(model_name)
             self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
-                device_map="auto",
-                use_safetensors=use_safetensors
-            )
+            self.processor = None
+            try:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    device_map="auto",
+                    use_safetensors=use_safetensors
+                )
+            except Exception:
+                if _VLMModel is None:
+                    raise
+                logger.info("CausalLM load failed; trying VLM loader")
+                self.model = _VLMModel.from_pretrained(
+                    model_name,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32,
+                    device_map="auto",
+                )
+                self.processor = AutoProcessor.from_pretrained(model_name)
             self.model_name = model_name
             self.visualizer.model = self.model
             
@@ -111,6 +134,7 @@ class ModelManager:
             self.neuron_sculptor = None
             self.weight_merger = WeightMerger(self.model)
             self.fact_editor = None
+            self.vlm_editor = None
             self.eval_prober = None
             
             # Create architecture visualization (handle None gracefully)
@@ -755,6 +779,59 @@ def create_interface():
                     f"vlm_edited_model/")
         except Exception as e:
             return f"Save/download failed: {e}"
+
+    # --- Local VLM fact writing ---
+
+    def _vlm_editor():
+        if model_manager.model is None:
+            return None, "No model loaded."
+        if getattr(model_manager, "processor", None) is None:
+            return None, "Loaded model is not a VLM (no processor)."
+        if model_manager.vlm_editor is None or \
+                model_manager.vlm_editor.model is not model_manager.model:
+            from vlm_fact_editor import VLMFactEditor
+            model_manager.vlm_editor = VLMFactEditor(
+                model_manager.model, model_manager.tokenizer,
+                model_manager.processor)
+        return model_manager.vlm_editor, None
+
+    def vlm_write(img1, q1, img2, q2, answer, cimg, cq):
+        ed, err = _vlm_editor()
+        if err:
+            return err
+        asks = [(img1.convert("RGB") if img1 is not None else None,
+                 (q1 or "").strip())]
+        if img2 is not None and (q2 or "").strip():
+            asks.append((img2.convert("RGB"), q2.strip()))
+        contrast = ([(cimg.convert("RGB"), cq.strip())]
+                    if cimg is not None and (cq or "").strip() else [])
+        if not asks[0][1] or not (answer or "").strip():
+            return "Need at least one image+question and an answer."
+        try:
+            stats = ed.teach(asks, answer.strip(), contrast)
+            return json.dumps(stats, indent=2, default=str)[:3000]
+        except Exception as e:
+            return f"VLM write failed: {e}"
+
+    def vlm_compare(img, q):
+        ed, err = _vlm_editor()
+        if err:
+            return err
+        if not ed.facts:
+            return "No VLM facts written yet."
+        try:
+            r = ed.compare(
+                (img.convert("RGB") if img is not None else None,
+                 (q or "").strip()))
+            return f"BASE:\n{r.get('base','')}\n\nEDITED:\n{r.get('edited','')}"
+        except Exception as e:
+            return f"Compare failed: {e}"
+
+    def vlm_undo():
+        ed, err = _vlm_editor()
+        if err:
+            return err
+        return ed.undo_last()
 
     def runpod_connect_existing(api_key: str, pod_id: str, proxy_url: str) -> str:
         pod_id = (pod_id or "").strip()
@@ -2215,6 +2292,37 @@ def create_interface():
                         with gr.Row():
                             fw_base_out = gr.Textbox(label="Base", lines=5)
                             fw_edit_out = gr.Textbox(label="Edited", lines=5)
+                gr.Markdown("**VLM fact write** — load a vision-language "
+                            "model (e.g. `HuggingFaceTB/SmolVLM-256M-Instruct`), "
+                            "teach an image→answer association, then compare "
+                            "on a held-out image.")
+                with gr.Row():
+                    vl_img1 = gr.Image(label="Ask image 1", type="pil",
+                                       height=160)
+                    vl_q1 = gr.Textbox(label="Question 1",
+                                       placeholder="What is this symbol?")
+                    vl_img2 = gr.Image(label="Ask image 2 (opt)", type="pil",
+                                       height=160)
+                    vl_q2 = gr.Textbox(label="Question 2 (opt)")
+                with gr.Row():
+                    vl_answer = gr.Textbox(
+                        label="Answer to write", scale=2,
+                        placeholder="It is the Zorblax sigil...")
+                    vl_cimg = gr.Image(label="Contrast image (opt)",
+                                       type="pil", height=120, scale=1)
+                    vl_cq = gr.Textbox(label="Contrast Q (opt)", scale=1)
+                with gr.Row():
+                    vl_write_btn = gr.Button("Write VLM fact",
+                                             variant="primary", scale=1)
+                    vl_undo_btn = gr.Button("Undo fact", scale=1)
+                vl_status = gr.Textbox(label="VLM write status", lines=6)
+                with gr.Row():
+                    vl_cmp_img = gr.Image(label="Compare image", type="pil",
+                                          height=160)
+                    vl_cmp_q = gr.Textbox(label="Compare question",
+                                          placeholder="held-out phrasing")
+                vl_cmp_btn = gr.Button("Compare base vs edited")
+                vl_cmp_out = gr.Textbox(label="Compare result", lines=6)
 
             with gr.TabItem("Eval Probe"):
                 gr.Markdown(
@@ -3424,6 +3532,14 @@ renderPlot();
         fw_write_btn.click(fn=fw_teach,
                            inputs=[fw_asks, fw_answer, fw_contrast],
                            outputs=[fw_log, fw_facts])
+        vl_write_btn.click(
+            fn=vlm_write,
+            inputs=[vl_img1, vl_q1, vl_img2, vl_q2, vl_answer,
+                    vl_cimg, vl_cq],
+            outputs=[vl_status])
+        vl_cmp_btn.click(fn=vlm_compare, inputs=[vl_cmp_img, vl_cmp_q],
+                         outputs=[vl_cmp_out])
+        vl_undo_btn.click(fn=vlm_undo, outputs=[vl_status])
         fw_eval_btn.click(fn=fw_compare, inputs=[fw_eval_q, fw_eval_n],
                           outputs=[fw_base_out, fw_edit_out, fw_log])
         fw_undo_btn.click(fn=fw_undo, outputs=[fw_log, fw_facts])
