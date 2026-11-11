@@ -795,7 +795,8 @@ def create_interface():
                 model_manager.processor)
         return model_manager.vlm_editor, None
 
-    def vlm_write(img1, q1, img2, q2, answer, cimg, cq):
+    def vlm_write(img1, q1, img2, q2, answer, cimg, cq,
+                  lam, max_rel, rounds, cw):
         ed, err = _vlm_editor()
         if err:
             return err
@@ -808,6 +809,7 @@ def create_interface():
         if not asks[0][1] or not (answer or "").strip():
             return "Need at least one image+question and an answer."
         try:
+            _adv(ed, lam, max_rel, rounds, cw)
             stats = ed.teach(asks, answer.strip(), contrast)
             return json.dumps(stats, indent=2, default=str)[:3000]
         except Exception as e:
@@ -1548,7 +1550,12 @@ def create_interface():
                 model_manager.model, model_manager.tokenizer)
         return model_manager.fact_editor
 
-    def fw_teach(asks_text, answer, contrast_text):
+    def _adv(ed, lam, max_rel, rounds, cw):
+        ed.lam, ed.max_rel = lam, max_rel
+        ed.rounds, ed.cw = int(rounds), cw
+
+    def fw_teach(asks_text, answer, contrast_text,
+                 lam, max_rel, rounds, cw):
         if model_manager.model is None:
             yield "Load a base model first.", ""
             return
@@ -1559,6 +1566,7 @@ def create_interface():
             yield "Give at least one question phrasing and an answer.", ""
             return
         fe = _fw()
+        _adv(fe, lam, max_rel, rounds, cw)
         log = [f"Editing down-proj layers {fe.Ls[0]}-{fe.Ls[-1]}..."]
         yield "\n".join(log), fe.describe()
         try:
@@ -2292,6 +2300,17 @@ def create_interface():
                         with gr.Row():
                             fw_base_out = gr.Textbox(label="Base", lines=5)
                             fw_edit_out = gr.Textbox(label="Edited", lines=5)
+                with gr.Accordion("Advanced write params", open=False):
+                    with gr.Row():
+                        adv_lam = gr.Slider(0.5, 10.0, value=3.0, step=0.1,
+                                            label="lam (protection weight)")
+                        adv_max_rel = gr.Slider(0.05, 1.0, value=0.25,
+                                                step=0.05,
+                                                label="max_rel (|dW| cap)")
+                        adv_rounds = gr.Slider(1, 10, value=6, step=1,
+                                               label="refine rounds")
+                        adv_cw = gr.Slider(1, 50, value=10.0, step=1,
+                                           label="contrast weight")
                 gr.Markdown("**VLM fact write** — load a vision-language "
                             "model (e.g. `HuggingFaceTB/SmolVLM-256M-Instruct`), "
                             "teach an image→answer association, then compare "
@@ -3529,13 +3548,16 @@ renderPlot();
                       outputs=[ws_status, ws_history])
 
         # Fact Writer
-        fw_write_btn.click(fn=fw_teach,
-                           inputs=[fw_asks, fw_answer, fw_contrast],
-                           outputs=[fw_log, fw_facts])
+        fw_write_btn.click(
+            fn=fw_teach,
+            inputs=[fw_asks, fw_answer, fw_contrast,
+                    adv_lam, adv_max_rel, adv_rounds, adv_cw],
+            outputs=[fw_log, fw_facts])
         vl_write_btn.click(
             fn=vlm_write,
             inputs=[vl_img1, vl_q1, vl_img2, vl_q2, vl_answer,
-                    vl_cimg, vl_cq],
+                    vl_cimg, vl_cq,
+                    adv_lam, adv_max_rel, adv_rounds, adv_cw],
             outputs=[vl_status])
         vl_cmp_btn.click(fn=vlm_compare, inputs=[vl_cmp_img, vl_cmp_q],
                          outputs=[vl_cmp_out])
