@@ -1,9 +1,8 @@
 flask>=2.0.0
-transformers>=4.30.0
-torch>=2.0.0
+transformers>=4.46.0
 numpy>=1.24.0
 accelerate>=0.20.0
 huggingface-hub>=0.16.0
 safetensors>=0.4.0
 pillow>=9.0.0
-torchvision>=0.15,<0.20
+torchvision==0.17.2
