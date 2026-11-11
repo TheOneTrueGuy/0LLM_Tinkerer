@@ -217,8 +217,9 @@ class RunPodManager:
             *[f"curl -fsSL {self.POD_REPO_RAW}/{f} -o {f}"
               for f in self.POD_FILES],
             "mv runpod_requirements.txt requirements-pod.txt",
-            "pip install --no-cache-dir --ignore-installed "
-            "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log",
+            "( pip install --no-cache-dir --ignore-installed "
+            "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log "
+            "|| echo 'PIP INSTALL FAILED — starting handler anyway' )",
             "python runpod_handler.py 2>&1 | tee /workspace/server.log",
         ]
         return f"bash -xc '{' && '.join(steps)}'"
