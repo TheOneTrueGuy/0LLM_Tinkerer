@@ -218,6 +218,7 @@ class RunPodManager:
               for f in self.POD_FILES],
             "mv runpod_requirements.txt requirements-pod.txt",
             "( pip install --no-cache-dir --ignore-installed "
+            "--retries 10 --timeout 120 "
             "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log "
             "|| echo PIP_INSTALL_FAILED )",
             "python runpod_handler.py 2>&1 | tee /workspace/server.log",
