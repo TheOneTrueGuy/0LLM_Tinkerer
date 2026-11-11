@@ -217,7 +217,7 @@ class RunPodManager:
             *[f"curl -fsSL {self.POD_REPO_RAW}/{f} -o {f}"
               for f in self.POD_FILES],
             "mv runpod_requirements.txt requirements-pod.txt",
-            "( pip install --no-cache-dir --ignore-installed "
+            "( pip install --no-cache-dir --ignore-installed blinker "
             "--retries 10 --timeout 120 "
             "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log "
             "|| echo PIP_INSTALL_FAILED )",
