@@ -67,6 +67,7 @@ class VLMFactEditor(FactEditor):
             [list(ans_ids) + ([self.end] if end else [])],
             device=self._device())
         ids = torch.cat([kw.pop("input_ids"), extra], dim=1)
+        kw["attention_mask"] = torch.ones_like(ids)
         prev_active, self.active = self.active, False
         self.mod, self.cap = mod, True
         with torch.no_grad():
