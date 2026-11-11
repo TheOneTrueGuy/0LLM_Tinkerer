@@ -11,3 +11,5 @@ safetensors>=0.4.0
 pyvis>=0.3.2
 networkx>=3.1
 requests>=2.31.0
+torchvision>=0.15.0
+pillow>=9.0.0
