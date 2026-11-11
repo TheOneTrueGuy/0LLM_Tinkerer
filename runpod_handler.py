@@ -37,6 +37,7 @@ except ImportError:
 
 # Configure logging to stdout so RunPod console captures it
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+VERSION = "0.3.0-wsp"
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -139,7 +140,7 @@ def _get_model_state():
 def health():
     """Health check endpoint polled by the local manager."""
     return jsonify({
-        "status": "healthy",
+        "status": "healthy", "version": VERSION,
         "device": _device,
         "cuda_available": torch.cuda.is_available(),
         "model_loaded": _model is not None,

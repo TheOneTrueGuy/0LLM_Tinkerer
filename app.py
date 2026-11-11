@@ -30,6 +30,7 @@ import plotly.graph_objects as go
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+VERSION = "0.3.0-wsp"
 logger = logging.getLogger(__name__)
 
 class ModelManager:
