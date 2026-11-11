@@ -336,7 +336,9 @@ class FactEditor:
                 rel = dW_x.norm().item() / self.Wn[l]
                 if rel > self.max_rel:
                     dW_x *= self.max_rel / rel
-                self.delta[l] = base[l] + dW_x.to(self._device())
+                # delta stays on CPU; _w_hook moves a copy to the input's
+                # device per call, so moving it here mixes devices
+                self.delta[l] = base[l] + dW_x
                 if l == self.L:
                     Kp_top = Kp
             return Kp_top
