@@ -221,6 +221,8 @@ class RunPodManager:
             "--retries 10 --timeout 120 "
             "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log "
             "|| echo PIP_INSTALL_FAILED )",
+            "( pip install --no-cache-dir --no-deps torchvision==0.17.2 "
+            "2>&1 | tee -a /workspace/pip.log || echo TV_FAILED )",
             "python runpod_handler.py 2>&1 | tee /workspace/server.log",
         ]
         return f"bash -xc '{' && '.join(steps)}'"
