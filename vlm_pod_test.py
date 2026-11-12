@@ -59,12 +59,18 @@ def main():
 
     print("\n=== held-out compare (red CIRCLE — new shape, same color) ===")
     r = rm.remote_vlm_fact_compare(url, circ, "What is this symbol?")
-    print("BASE :", r.get("base", r)[:150])
-    print("EDIT :", r.get("edited", r)[:150])
+    if "base" in r:
+        print("BASE :", r["base"][:150])
+        print("EDIT :", r["edited"][:150])
+    else:
+        print("RESP:", r)
 
     print("\n=== contrast compare (blue square) ===")
     r = rm.remote_vlm_fact_compare(url, blue, "What is this symbol?")
-    print("EDIT :", r.get("edited", r)[:150])
+    if "edited" in r:
+        print("EDIT :", r["edited"][:150])
+    else:
+        print("RESP:", r)
 
     print("\n=== post-write eval ===")
     print(rm.remote_eval(url, "post-write"))
