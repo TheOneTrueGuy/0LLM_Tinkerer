@@ -23,17 +23,20 @@ from flask import Flask, jsonify, request, send_file
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
+import transformers as _tf
+
 try:
-    from transformers import (
-        AutoModelForImageTextToText as _VLMModel, AutoProcessor)
-    _HAS_VLM = True
+    from transformers import AutoProcessor
 except ImportError:
+    AutoProcessor = None
+
+_VLM_CLASSES = []
+for _n in ("AutoModelForImageTextToText", "AutoModelForVision2Seq"):
     try:
-        from transformers import (
-            AutoModelForVision2Seq as _VLMModel, AutoProcessor)
-        _HAS_VLM = True
-    except ImportError:
-        _HAS_VLM = False
+        _c = getattr(_tf, _n)
+        _VLM_CLASSES.append(_c)
+    except AttributeError:
+        pass
 
 # Configure logging to stdout so RunPod console captures it
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -210,23 +213,26 @@ def load_model():
             logger.info(f"Loading model {model_name} on device {_device}")
             config = AutoConfig.from_pretrained(model_name)
             tokenizer = AutoTokenizer.from_pretrained(model_name)
-            try:
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    torch_dtype=torch.float16 if _device == "cuda" else torch.float32,
-                    device_map="auto",
-                    use_safetensors=use_safetensors,
-                )
-            except Exception:
-                if not _HAS_VLM:
-                    raise
-                logger.info("CausalLM load failed; trying ImageTextToText")
-                model = _VLMModel.from_pretrained(
-                    model_name,
-                    torch_dtype=torch.float16 if _device == "cuda" else torch.float32,
-                    device_map="auto",
-                )
-                _processor = AutoProcessor.from_pretrained(model_name)
+            model = None
+            last_err = None
+            for cls in [AutoModelForCausalLM] + _VLM_CLASSES:
+                try:
+                    model = cls.from_pretrained(
+                        model_name,
+                        torch_dtype=torch.float16
+                        if _device == "cuda" else torch.float32,
+                        device_map="auto",
+                    )
+                    if cls is not AutoModelForCausalLM:
+                        logger.info(f"loaded via {cls.__name__}")
+                        if AutoProcessor is not None:
+                            _processor = AutoProcessor.from_pretrained(
+                                model_name)
+                    break
+                except Exception as e:
+                    last_err = e
+            if model is None:
+                raise last_err
             _config = config
             _tokenizer = tokenizer
             _model = model

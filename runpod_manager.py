@@ -43,6 +43,8 @@ def load_runpod_api_key(project_dir: Optional[str] = None) -> str:
     candidates = [
         base / ".env",
         base / "runpod_api_key.txt",
+        base / "venv" / "runpod_key.txt",
+        base / "venv" / "runpod_api_key.txt",
         base / "runpod.key",
         Path.home() / ".runpod" / "api_key",
     ]
