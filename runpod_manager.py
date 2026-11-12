@@ -219,12 +219,12 @@ class RunPodManager:
             *[f"curl -fsSL {self.POD_REPO_RAW}/{f} -o {f}"
               for f in self.POD_FILES],
             "mv runpod_requirements.txt requirements-pod.txt",
-            "( pip install --no-cache-dir --ignore-installed blinker "
+            "( pip install --no-cache-dir --ignore-installed "
             "--retries 10 --timeout 120 "
             "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log "
             "|| echo PIP_INSTALL_FAILED )",
-            "( pip install --no-cache-dir --no-deps torchvision==0.17.2 "
-            "2>&1 | tee -a /workspace/pip.log || echo TV_FAILED )",
+            "( pip install --no-cache-dir --no-deps accelerate torchvision==0.17.2 "
+            "2>&1 | tee -a /workspace/pip.log || echo DEPS_FAILED )",
             "python runpod_handler.py 2>&1 | tee /workspace/server.log",
         ]
         return f"bash -xc '{' && '.join(steps)}'"
