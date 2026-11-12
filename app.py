@@ -2109,7 +2109,7 @@ def create_interface():
                 model_name = gr.Textbox(
                     label="Model Name",
                     placeholder="Enter HuggingFace model name (e.g., 'gpt2')",
-                    value="gpt2"
+                    value=""
                 )
                 cached_models = gr.Dropdown(
                     label="...or pick from models already on disk (fills name above)",
@@ -2756,7 +2756,7 @@ renderPlot();
                         runpod_model_name = gr.Textbox(
                             label="Remote Model Name",
                             placeholder="e.g., gpt2",
-                            value="gpt2",
+                            value="",
                         )
                         runpod_use_safetensors = gr.Checkbox(
                             label="Use safetensors", value=True
