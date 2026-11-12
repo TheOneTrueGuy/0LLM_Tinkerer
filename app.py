@@ -434,8 +434,13 @@ def create_interface():
     def load_model(model_name: str, picked: str, use_safetensors: bool):
         model_name = (model_name or "").strip() or (picked or "").strip()
         if not model_name:
-            model_name = "''"
-        result = model_manager.load_model(model_name, use_safetensors=use_safetensors)
+            # both fields blank: say so instead of sending "''" to the hub
+            result = {"status": "error",
+                      "message": "Pick or type a model first.",
+                      "structure": "No model loaded"}
+        else:
+            result = model_manager.load_model(
+                model_name, use_safetensors=use_safetensors)
         empty = gr.update(choices=[], value=None)
         if result["status"] == "error":
             return (
