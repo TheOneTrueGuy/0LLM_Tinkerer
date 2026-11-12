@@ -431,7 +431,10 @@ def create_interface():
             gr.update(choices=list_runs(), value=None),
         )
 
-    def load_model(model_name: str, use_safetensors: bool):
+    def load_model(model_name: str, picked: str, use_safetensors: bool):
+        model_name = (model_name or "").strip() or (picked or "").strip()
+        if not model_name:
+            model_name = "''"
         result = model_manager.load_model(model_name, use_safetensors=use_safetensors)
         empty = gr.update(choices=[], value=None)
         if result["status"] == "error":
@@ -3189,7 +3192,7 @@ renderPlot();
         ]
         load_btn.click(
             fn=load_model,
-            inputs=[model_name, use_safetensors],
+            inputs=[model_name, cached_models, use_safetensors],
             outputs=MODEL_OUTPUTS
         )
         arch_nodes.change(
