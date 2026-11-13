@@ -59,7 +59,7 @@ class VLMFactEditor(FactEditor):
         kw = self.processor(
             text=prompt,
             images=[image] if image is not None else None,
-            return_tensors="pt")
+            padding=True, return_tensors="pt")
         return {k: v.to(self._device()) if torch.is_tensor(v) else v
                 for k, v in kw.items()}
 
