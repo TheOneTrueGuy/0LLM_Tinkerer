@@ -55,13 +55,31 @@ class VLMFactEditor(FactEditor):
         pre = "<image>\n" if image is not None else ""
         return f"{pre}Question: {q}\nAnswer: "
 
-    def _mm_kwargs(self, image, prompt: str) -> Dict[str, torch.Tensor]:
-        kw = self.processor(
-            text=prompt,
-            images=[image] if image is not None else None,
-            padding=True, return_tensors="pt")
+    def _mm_kwargs(self, image, qtext: str) -> Dict[str, torch.Tensor]:
+        """Processor inputs for an (image, question) pair. The documented
+        SmolVLM path is apply_chat_template with tokenize=True — it expands
+        image placeholders and pixel tensors in one pass; the bare
+        processor(text=, images=) call can't reconcile the two on 4.x."""
+        content = ([{"type": "image"}] if image is not None else []) + \
+                  [{"type": "text", "text": qtext}]
+        messages = [{"role": "user", "content": content}]
+        kw = None
+        try:
+            kw = self.processor.apply_chat_template(
+                messages,
+                images=[image] if image is not None else None,
+                add_generation_prompt=True,
+                tokenize=True, return_dict=True, return_tensors="pt")
+        except Exception:
+            pass
+        if kw is None or "input_ids" not in kw:
+            prompt = self._prompt(qtext, image)
+            kw = self.processor(
+                text=prompt,
+                images=[image] if image is not None else None,
+                padding=True, return_tensors="pt")
         return {k: v.to(self._device()) if torch.is_tensor(v) else v
-                for k, v in kw.items()}
+                for k, v in dict(kw).items()}
 
     def _split(self, q) -> QImg:
         """asks/contrast may be (image, q) tuples or bare strings."""
@@ -74,7 +92,7 @@ class VLMFactEditor(FactEditor):
     def read(self, q, ans_ids: List[int], end: bool = False,
              mod: bool = False) -> Dict[str, Any]:
         img, qtext = self._split(q)
-        kw = self._mm_kwargs(img, self._prompt(qtext, img))
+        kw = self._mm_kwargs(img, qtext)
         p_len = kw["input_ids"].shape[1]
         extra = torch.tensor(
             [list(ans_ids) + ([self.end] if end else [])],
@@ -111,7 +129,7 @@ class VLMFactEditor(FactEditor):
 
     def answer(self, q, mod: bool, n: int = 80) -> str:
         img, qtext = self._split(q)
-        kw = self._mm_kwargs(img, self._prompt(qtext, img))
+        kw = self._mm_kwargs(img, qtext)
         prev, self.mod = self.active, mod
         self.active = False
         with torch.no_grad():
@@ -126,7 +144,7 @@ class VLMFactEditor(FactEditor):
 
     def _gen_ids(self, q, n: int):
         img, qtext = self._split(q)
-        kw = self._mm_kwargs(img, self._prompt(qtext, img))
+        kw = self._mm_kwargs(img, qtext)
         prev, self.mod = self.active, True
         self.active = False
         with torch.no_grad():
