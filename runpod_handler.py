@@ -17,6 +17,7 @@ Exposes a small HTTP API that mirrors the local ModelManager operations:
 import logging
 import os
 import threading
+import traceback
 from typing import Dict, Any, List
 
 from flask import Flask, jsonify, request, send_file
@@ -41,6 +42,7 @@ for _n in ("AutoModelForImageTextToText", "AutoModelForVision2Seq"):
 # Configure logging to stdout so RunPod console captures it
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 VERSION = "0.3.0-wsp"
+_TF_VERSION = _tf.__version__
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
@@ -147,6 +149,8 @@ def health():
         "device": _device,
         "cuda_available": torch.cuda.is_available(),
         "model_loaded": _model is not None,
+        "torch": torch.__version__,
+        "transformers": _TF_VERSION,
     })
 
 
@@ -680,7 +684,8 @@ def vlm_fact_write():
             return jsonify(stats)
     except Exception as e:
         logger.error(f"vlm_fact_write failed: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e),
+                        "trace": traceback.format_exc()[-2000:]}), 500
 
 
 @app.route("/vlm_fact_compare", methods=["POST"])
@@ -695,7 +700,8 @@ def vlm_fact_compare():
         r = _vlm_editor.compare(pairs[0], n=int(data.get("n", 60)))
         return jsonify(r)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": str(e),
+                        "trace": traceback.format_exc()[-2000:]}), 500
 
 
 @app.route("/vlm_fact_undo", methods=["POST"])

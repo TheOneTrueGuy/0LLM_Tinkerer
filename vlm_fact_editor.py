@@ -60,14 +60,14 @@ class VLMFactEditor(FactEditor):
         SmolVLM path is apply_chat_template with tokenize=True — it expands
         image placeholders and pixel tensors in one pass; the bare
         processor(text=, images=) call can't reconcile the two on 4.x."""
-        content = ([{"type": "image"}] if image is not None else []) + \
+        content = ([{"type": "image", "image": image}]
+                   if image is not None else []) + \
                   [{"type": "text", "text": qtext}]
         messages = [{"role": "user", "content": content}]
         kw = None
         try:
             kw = self.processor.apply_chat_template(
                 messages,
-                images=[image] if image is not None else None,
                 add_generation_prompt=True,
                 tokenize=True, return_dict=True, return_tensors="pt")
         except Exception:
