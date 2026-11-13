@@ -72,6 +72,20 @@ def proxy_url_from_pod_id(pod_id: str, port: int = 5000) -> str:
     return f"https://{pod_id.strip()}-{port}.proxy.runpod.net"
 
 
+def _find_local_pubkey() -> str:
+    """First SSH public key under ~/.ssh, for pod env injection."""
+    import glob
+    ssh_dir = os.path.join(os.path.expanduser("~"), ".ssh")
+    for path in sorted(glob.glob(os.path.join(ssh_dir, "*.pub"))):
+        try:
+            val = open(path, encoding="utf-8").read().strip()
+            if val.startswith("ssh-"):
+                return val
+        except OSError:
+            continue
+    return ""
+
+
 @dataclass
 class PodInfo:
     id: str
@@ -216,6 +230,10 @@ class RunPodManager:
         issues. Deploys always match pushed master."""
         steps = [
             "mkdir -p /workspace && cd /workspace",
+            "( mkdir -p /root/.ssh && echo $PUBLIC_KEY "
+            "> /root/.ssh/authorized_keys && chmod 700 /root/.ssh "
+            "&& chmod 600 /root/.ssh/authorized_keys ) || true",
+            "( service ssh start || /usr/sbin/sshd ) || true",
             *[f"curl -fsSL {self.POD_REPO_RAW}/{f} -o {f}"
               for f in self.POD_FILES],
             "mv runpod_requirements.txt requirements-pod.txt",
@@ -245,7 +263,11 @@ class RunPodManager:
 
         selected_gpu = gpu_type or GPU_PREFERENCE[0]
         safe_name = name.replace('"', "'").replace("\\", "")
-        env_list = env or []
+        env_list = list(env or [])
+        if not any(e.get("key") == "PUBLIC_KEY" for e in env_list):
+            pub = _find_local_pubkey()
+            if pub:
+                env_list.append({"key": "PUBLIC_KEY", "value": pub})
         env_str = ", ".join(
             f'{{ key: "{e["key"]}", value: "{e["value"]}" }}' for e in env_list
         )
