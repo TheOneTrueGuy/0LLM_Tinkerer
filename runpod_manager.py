@@ -214,6 +214,8 @@ class RunPodManager:
         "fact_editor.py",
         "eval_probe.py",
         "vlm_fact_editor.py",
+        "aha_editor.py",
+        "aha_test.py",
         "runpod_requirements.txt",
     ]
     POD_REPO_RAW = (
