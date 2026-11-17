@@ -111,6 +111,10 @@ def main():
                    default="unmatched",
                    help="u source for --steer (unmatched uses all collected "
                         "positions; matched needs pairs)")
+    p.add_argument("--steer-random", action="store_true",
+                   help="control: steer along a random unit vector instead "
+                        "of u — if it reproduces the dose curve, u was just "
+                        "a perturbation axis, not a causal direction")
     p.add_argument("--save", help="directory to save the edited model")
     p.add_argument("--out", default="aha_run", help="artifacts directory")
     p.add_argument("--self-test", action="store_true")
@@ -218,7 +222,14 @@ def main():
              else max(gaps, key=gaps.get))
         if gaps.get(l, 0) <= 0:
             raise SystemExit(f"L{l}: non-positive u gap — no separation")
-        logger.info(f"steering L{l} ({args.dir} u, gap {gaps[l]:.3f})")
+        if args.steer_random:
+            w = np.random.default_rng(0).normal(
+                size=u_dir[l].shape).astype(np.float32)
+            u_dir = {l: w / np.linalg.norm(w)}
+            logger.info(f"steering L{l} with RANDOM unit vector")
+        else:
+            logger.info(
+                f"steering L{l} ({args.dir} u, gap {gaps[l]:.3f})")
         signs = {"minus": [-1.0], "plus": [1.0], "both": [-1.0, 1.0]}[
             args.steer]
         arms = []
@@ -237,7 +248,8 @@ def main():
                            for t in etr],
                           open(out / f"steer_{tag.replace('+', 'p').replace('-', 'm')}.json", "w"))
                 logger.info(f"arm {tag}: {st}")
-        report = {"model": args.model, "mode": f"steer-{args.dir}",
+        report = {"model": args.model,
+                  "mode": f"steer-{'random' if args.steer_random else args.dir}",
                   "layer": l, "gap": round(gaps[l], 3), "base": stats,
                   "arms": arms, "seconds": round(time.time() - t0)}
         json.dump(report, open(out / "steer_report.json", "w"), indent=1)
