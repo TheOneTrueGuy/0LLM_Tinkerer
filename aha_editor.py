@@ -245,8 +245,8 @@ def looping_prefixes(tok, traces, margin: int = 8, max_prefix: int = 300):
 
 @torch.no_grad()
 def make_pairs(model, tok, traces, n_cont: int = 8, max_new: int = 3072,
-               margin: int = 8, max_prefix: int = 300,
-               temperature: float = 0.6, top_p: float = 0.95,
+               margin: int = 64, max_prefix: int = 300,
+               temperature: float = 1.0, top_p: float = 0.95,
                top_k: int = 20, progress=None) -> List[dict]:
     """Resample continuations of every looping prefix at penalty 0.
     Returns [{id, onset, n_prompt, prefix_ids, conts:[{ids, loops, onset, hit_cap}]}].
@@ -297,6 +297,11 @@ def build_direction(model, records, window: int = 160, offset: int = 64,
     """u per layer from matched pairs. Returns {u: {l: np.array},
     separation: [{layer, cohens_d, pair_agreement}], n_pairs}."""
     pairs = matched_pairs(records)
+    if not pairs:
+        raise RuntimeError(
+            "no matched pairs — every prefix's continuations all looped or "
+            "all finished. Try a larger margin (cut further back) or higher "
+            "temperature for more divergent branches.")
     layers = list(range(len(decoder_layers(model))))
     dev = next(model.parameters()).device
     diffs = {l: [] for l in layers}
@@ -328,7 +333,8 @@ def build_direction(model, records, window: int = 160, offset: int = 64,
         raise RuntimeError(f"too few pairs ({used} < {min_pairs})")
 
     n = used
-    heldout = np.random.default_rng(0).permutation(n)[:max(int(n * heldout_share), 5)]
+    heldout = np.random.default_rng(0).permutation(n)[
+        :max(1, min(int(n * heldout_share), n - 1))]
     fit = np.setdiff1d(np.arange(n), heldout)
     u, separation = {}, []
     for l in layers:
@@ -358,6 +364,7 @@ def collect_activations(model, tok, traces, layers: List[int], seed: int = 0,
     rng = np.random.default_rng(seed)
     dev = next(model.parameters()).device
     h = {l: [] for l in layers}
+    resid = {l: [] for l in layers}
     meta = {"label": [], "trace": [], "pos": []}
     for t, trace in enumerate(traces):
         prompt = chat_prompt_ids(tok, trace["problem"])
@@ -377,17 +384,38 @@ def collect_activations(model, tok, traces, layers: List[int], seed: int = 0,
             continue
         ids = torch.tensor([prompt + answer[:end].tolist()], device=dev)
         rows = torch.tensor([len(prompt) + p for _, p in picked], device=dev)
-        with capture(model, layers, what=("h",)) as store:
+        with capture(model, layers, what=("h", "resid")) as store:
             _backbone_forward(model, ids)
         for l in layers:
             h[l].append(store[l]["h"][rows].to(torch.float16).cpu().numpy())
+            resid[l].append(
+                store[l]["resid"][rows].to(torch.float16).cpu().numpy())
         meta["label"] += [lab for lab, _ in picked]
         meta["trace"] += [t] * len(picked)
         meta["pos"] += [p for _, p in picked]
         if progress:
             progress(t + 1, len(traces))
     return {"h": {l: np.concatenate(h[l]) for l in layers},
+            "resid": {l: np.concatenate(resid[l]) for l in layers},
             "meta": {k: np.array(v) for k, v in meta.items()}}
+
+
+def build_direction_unmatched(collected: dict) -> Dict[int, np.ndarray]:
+    """Barry's fallback when no matched pairs exist: u is the difference
+    between the mean residual stream on in-loop tokens and on productive
+    tokens. Works 'most of the way' — no shared prefix, so other
+    correlates ride along."""
+    resid, meta = collected["resid"], collected["meta"]
+    labels = meta["label"]
+    out = {}
+    for l in resid:
+        r = np.asarray(resid[l], np.float32)
+        loop, prod = r[labels == 2], r[labels == 0]
+        if len(loop) < 50 or len(prod) < 50:
+            continue
+        vec = loop.mean(0) - prod.mean(0)
+        out[l] = (vec / (np.linalg.norm(vec) + 1e-9)).astype(np.float32)
+    return out
 
 
 # ======================================================================
@@ -457,17 +485,20 @@ def pdhg(h_loop: np.ndarray, h_prod: np.ndarray, delta: float, eps: float,
 def search_layers(model, u: Dict[int, np.ndarray], collected: dict,
                   eps: float = 1.0, k: int = 8, mult: float = 4.0,
                   seed: int = 0, heldout_share: float = 0.2,
+                  pro: bool = False,
                   progress=None) -> Tuple[List[dict], Dict[int, np.ndarray]]:
     """Solve the LP at every layer; rank by held-out hit rate then
-    damage-per-delta. Returns (ranked rows, {l: v})."""
+    damage-per-delta. Returns (ranked rows, {l: v}).
+    pro=True inverts the edit: productive tokens are pushed TOWARD the loop
+    direction (h·v >= +δ) while looping tokens are kept within ε — the
+    bidirectional control experiment for the de-loop edit."""
     layers = sorted(u.keys())
     h_all, meta = collected["h"], collected["meta"]
     labels = meta["label"]
-    traces = np.unique(meta["trace"])
-    rng_ho = np.random.default_rng(seed)
-    held = set(rng_ho.choice(traces, int(len(traces) * heldout_share),
-                           replace=False).tolist())
-    heldout = np.array([t in held for t in meta["trace"]])
+    # Position-level holdout, stratified implicitly: holding out whole traces
+    # can remove a scarce class entirely when few traces carry it (e.g. only
+    # finished traces carry productive positions in a mostly-looping run).
+    heldout = np.random.default_rng(seed).random(len(labels)) < heldout_share
     rows, solutions = [], {}
     for idx, l in enumerate(layers):
         h = np.asarray(h_all[l], np.float32)
@@ -488,22 +519,30 @@ def search_layers(model, u: Dict[int, np.ndarray], collected: dict,
                                min(4000, int(fit_loop.sum())), replace=False)
         prod_rows = rng.choice(np.flatnonzero(fit_prod),
                                min(8000, int(fit_prod.sum())), replace=False)
-        dense = pdhg(h[loop_rows], h[prod_rows], delta, eps,
-                     cost=np.ones(h.shape[1]))
+        if pro:
+            push, keep = -h[prod_rows], h[loop_rows]
+        else:
+            push, keep = h[loop_rows], h[prod_rows]
+        dense = pdhg(push, keep, delta, eps, cost=np.ones(h.shape[1]))
         neurons = np.sort(np.argsort(
             -np.abs(dense) * h[fit_loop | fit_prod].std(0))[:k])
-        v = pdhg(h[loop_rows], h[prod_rows], delta, eps,
+        v = pdhg(push, keep, delta, eps,
                  cost=np.full(h.shape[1], 1e-3), support=neurons)
 
         shift = h[heldout] @ v
         on_loops = shift[labels[heldout] == 2]
         on_prod = shift[labels[heldout] == 0]
+        if pro:
+            hit = float((on_prod >= delta).mean())
+            damage = abs(float(on_loops.mean())) / delta
+        else:
+            hit = float((on_loops <= -delta).mean())
+            damage = abs(float(on_prod.mean())) / delta
         rows.append({"layer": l, "delta": round(delta, 3),
-                     "hit_rate": round(float((on_loops <= -delta).mean()), 3),
+                     "hit_rate": round(hit, 3),
                      "loop_shift": round(float(on_loops.mean()), 3),
                      "productive_shift": round(float(on_prod.mean()), 3),
-                     "damage_per_delta": round(
-                         abs(float(on_prod.mean())) / delta, 3),
+                     "damage_per_delta": round(damage, 3),
                      "neurons": neurons.tolist(),
                      "dense_nonzeros": int((dense != 0).sum())})
         solutions[l] = v
