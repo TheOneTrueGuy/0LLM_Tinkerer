@@ -232,10 +232,14 @@ class RunPodManager:
         issues. Deploys always match pushed master."""
         steps = [
             "mkdir -p /workspace && cd /workspace",
-            "( mkdir -p /root/.ssh && echo $PUBLIC_KEY "
+            "( mkdir -p /run/sshd /root/.ssh && echo $PUBLIC_KEY "
             "> /root/.ssh/authorized_keys && chmod 700 /root/.ssh "
-            "&& chmod 600 /root/.ssh/authorized_keys ) || true",
-            "( service ssh start || /usr/sbin/sshd ) || true",
+            "&& chmod 600 /root/.ssh/authorized_keys "
+            "&& ( apt-get update -qq && apt-get install -y -qq "
+            "openssh-server || true ) "
+            "&& ( service ssh restart || /usr/sbin/sshd ) "
+            "&& sleep 1 && pgrep -a sshd ) "
+            "> /workspace/ssh.log 2>&1 || true",
             *[f"curl -fsSL {self.POD_REPO_RAW}/{f} -o {f}"
               for f in self.POD_FILES],
             "mv runpod_requirements.txt requirements-pod.txt",

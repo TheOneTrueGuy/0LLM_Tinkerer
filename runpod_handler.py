@@ -743,6 +743,22 @@ def download_model():
                      mimetype="application/zip")
 
 
+@app.route("/logs", methods=["GET"])
+def logs():
+    """Tail the bootstrap/experiment logs for remote diagnosis."""
+    which = request.args.get("f", "server")
+    n = int(request.args.get("n", 200))
+    allowed = {"server", "pip", "ssh", "aha"}
+    if which not in allowed:
+        return jsonify({"error": f"f must be one of {sorted(allowed)}"}), 400
+    path = f"/workspace/{which}.log"
+    if not os.path.exists(path):
+        return jsonify({"error": f"{path} not found"}), 404
+    with open(path, errors="replace") as fh:
+        tail = fh.readlines()[-n:]
+    return jsonify({"file": path, "lines": tail})
+
+
 def run_server(host: str = "0.0.0.0", port: int = 5000) -> None:
     app.run(host=host, port=port, debug=False, threaded=True)
 
