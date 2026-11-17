@@ -151,6 +151,8 @@ def health():
         "model_loaded": _model is not None,
         "torch": torch.__version__,
         "transformers": _TF_VERSION,
+        "pod_ttl_min": int(os.environ.get("POD_TTL_MIN", 360)),
+        "pod_idle_min": int(os.environ.get("POD_IDLE_MIN", 60)),
     })
 
 

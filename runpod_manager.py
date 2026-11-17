@@ -216,6 +216,7 @@ class RunPodManager:
         "vlm_fact_editor.py",
         "aha_editor.py",
         "aha_test.py",
+        "podwatch.sh",
         "runpod_requirements.txt",
     ]
     POD_REPO_RAW = (
@@ -243,6 +244,8 @@ class RunPodManager:
             *[f"curl -fsSL {self.POD_REPO_RAW}/{f} -o {f}"
               for f in self.POD_FILES],
             "mv runpod_requirements.txt requirements-pod.txt",
+            "( nohup bash /workspace/podwatch.sh "
+            "> /workspace/podwatch_out.log 2>&1 & )",
             "( pip install --no-cache-dir --ignore-installed "
             "--retries 10 --timeout 120 "
             "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log "
@@ -263,13 +266,23 @@ class RunPodManager:
         container_disk_gb: int = DEFAULT_CONTAINER_DISK_GB,
         volume_gb: int = DEFAULT_VOLUME_GB,
         env: Optional[List[Dict[str, str]]] = None,
+        ttl_minutes: int = 360,
+        idle_minutes: int = 60,
     ) -> PodInfo:
-        """Create a new GPU pod, optionally embedding a handler via dockerArgs."""
+        """Create a new GPU pod, optionally embedding a handler via dockerArgs.
+
+        A pod-side watchdog (podwatch.sh) stops the pod after ttl_minutes
+        regardless, or after idle_minutes with no SSH sessions, GPU/CPU
+        activity, or handler traffic. Pass 0 to disable either trip."""
         docker_args = self._build_docker_args()
 
         selected_gpu = gpu_type or GPU_PREFERENCE[0]
         safe_name = name.replace('"', "'").replace("\\", "")
         env_list = list(env or [])
+        for key, val in (("POD_TTL_MIN", ttl_minutes),
+                         ("POD_IDLE_MIN", idle_minutes)):
+            if not any(e.get("key") == key for e in env_list):
+                env_list.append({"key": key, "value": str(val)})
         if not any(e.get("key") == "PUBLIC_KEY" for e in env_list):
             pub = _find_local_pubkey()
             if pub:
