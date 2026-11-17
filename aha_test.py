@@ -59,6 +59,26 @@ def loop_stats(traces):
     return {"traces": len(traces), "cut": n_cut, "loops": n_loop}
 
 
+def loop_stats_rich(traces):
+    """Continuous metrics with more power than loop counts: copied-token
+    fraction, onset position (earlier = more loopy), mean length."""
+    rows = []
+    for t in traces:
+        dup = aha.dup_mask(t["resp_ids"])
+        o = aha.onset(dup)
+        rows.append({"cut": bool(t["cut"]), "loops": o is not None,
+                     "onset_frac": None if o is None else o / len(dup),
+                     "copied": float(dup.mean()), "len": len(t["resp_ids"])})
+    onsets = [r["onset_frac"] for r in rows if r["onset_frac"] is not None]
+    return {"traces": len(rows), "cut": sum(r["cut"] for r in rows),
+            "loops": sum(r["loops"] for r in rows),
+            "mean_copied_frac": round(float(np.mean(
+                [r["copied"] for r in rows])), 3),
+            "mean_onset_frac": (round(float(np.mean(onsets)), 3)
+                                if onsets else None),
+            "mean_len": int(np.mean([r["len"] for r in rows]))}
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", default="Qwen/Qwen3-0.6B")
@@ -79,6 +99,18 @@ def main():
     p.add_argument("--pro", action="store_true",
                    help="inverted control: push productive tokens toward "
                         "the loop direction instead of away")
+    p.add_argument("--steer", choices=["minus", "plus", "both"],
+                   help="no weight edit — add ±alpha*u to the residual "
+                        "during eval generation (causal probe for u)")
+    p.add_argument("--steer-layer", type=int,
+                   help="layer to steer (default: max u-projection gap)")
+    p.add_argument("--steer-mults", type=float, nargs="+",
+                   default=[0.5, 1.0, 2.0],
+                   help="alpha = mult * mean u-projection gap")
+    p.add_argument("--dir", choices=["matched", "unmatched"],
+                   default="unmatched",
+                   help="u source for --steer (unmatched uses all collected "
+                        "positions; matched needs pairs)")
     p.add_argument("--save", help="directory to save the edited model")
     p.add_argument("--out", default="aha_run", help="artifacts directory")
     p.add_argument("--self-test", action="store_true")
@@ -122,22 +154,41 @@ def main():
     json.dump(stats, open(out / "base_stats.json", "w"))
 
     logger.info("=== matched pairs ===")
-    records = aha.make_pairs(model, tok, traces, n_cont=args.cont,
-                             max_new=args.cont_max_new,
-                             margin=args.margin, temperature=args.temp,
-                             progress=lambda a, b: logger.info(f"prefix {a}/{b}"))
+    cont_path = out / "continuations.json"
+    if cont_path.exists():
+        records = json.load(open(cont_path))
+        logger.info(f"loaded {len(records)} saved prefix records")
+    else:
+        records = aha.make_pairs(model, tok, traces, n_cont=args.cont,
+                                 max_new=args.cont_max_new,
+                                 margin=args.margin, temperature=args.temp,
+                                 progress=lambda a, b: logger.info(
+                                     f"prefix {a}/{b}"))
+        json.dump(records, open(cont_path, "w"),
+                  default=lambda o: o.tolist())
     pairs = aha.matched_pairs(records)
     logger.info(f"{len(pairs)} matched pairs from {len(records)} prefixes")
-    json.dump(records, open(out / "continuations.json", "w"))
 
     logger.info("=== collect activations ===")
     layers = list(range(len(aha.decoder_layers(model))))
-    collected = aha.collect_activations(
-        model, tok, traces, layers,
-        progress=lambda a, b: logger.info(f"trace {a}/{b}"))
-    np.savez(out / "collected.npz",
-             **{f"h{l}": collected["h"][l] for l in layers},
-             **{k: collected["meta"][k] for k in collected["meta"]})
+    npz_path = out / "collected.npz"
+    if npz_path.exists():
+        z = np.load(npz_path, allow_pickle=False)
+        collected = {"h": {l: z[f"h{l}"] for l in layers
+                           if f"h{l}" in z.files},
+                     "resid": {l: z[f"r{l}"] for l in layers
+                               if f"r{l}" in z.files},
+                     "meta": {k: z[k] for k in z.files
+                              if not k.startswith(("h", "r"))}}
+        logger.info("loaded saved activations")
+    else:
+        collected = aha.collect_activations(
+            model, tok, traces, layers,
+            progress=lambda a, b: logger.info(f"trace {a}/{b}"))
+        np.savez(npz_path,
+                 **{f"h{l}": collected["h"][l] for l in layers},
+                 **{f"r{l}": collected["resid"][l] for l in layers},
+                 **{k: collected["meta"][k] for k in collected["meta"]})
 
     logger.info("=== direction ===")
     if pairs:
@@ -157,6 +208,41 @@ def main():
         direction = {"u": aha.build_direction_unmatched(collected),
                      "separation": [], "n_pairs": 0}
         n_pairs = 0
+
+    if args.steer:
+        # Causal probe: add ±alpha*u to the residual — no weight edit.
+        u_dir = (direction["u"] if args.dir == "matched" and pairs
+                 else aha.build_direction_unmatched(collected))
+        gaps = aha.proj_gap(collected, u_dir)
+        l = (args.steer_layer if args.steer_layer is not None
+             else max(gaps, key=gaps.get))
+        if gaps.get(l, 0) <= 0:
+            raise SystemExit(f"L{l}: non-positive u gap — no separation")
+        logger.info(f"steering L{l} ({args.dir} u, gap {gaps[l]:.3f})")
+        signs = {"minus": [-1.0], "plus": [1.0], "both": [-1.0, 1.0]}[
+            args.steer]
+        arms = []
+        for s in signs:
+            for k in args.steer_mults:
+                alpha = s * k * gaps[l]
+                tag = f"{'+' if s > 0 else '-'}{k:g}xgap"
+                with aha.steer(model, {l: (u_dir[l], alpha)}):
+                    etr = aha.sample_traces(
+                        model, tok, problems, max_new=args.max_new,
+                        progress=lambda a, b: logger.info(
+                            f"steer {tag} {a}/{b}"))
+                st = loop_stats_rich(etr)
+                arms.append({"arm": tag, "alpha": round(alpha, 2), **st})
+                json.dump([{**t, "resp_ids": t["resp_ids"].tolist()}
+                           for t in etr],
+                          open(out / f"steer_{tag.replace('+', 'p').replace('-', 'm')}.json", "w"))
+                logger.info(f"arm {tag}: {st}")
+        report = {"model": args.model, "mode": f"steer-{args.dir}",
+                  "layer": l, "gap": round(gaps[l], 3), "base": stats,
+                  "arms": arms, "seconds": round(time.time() - t0)}
+        json.dump(report, open(out / "steer_report.json", "w"), indent=1)
+        logger.info(f"RESULT: {json.dumps(report)}")
+        return
 
     logger.info("=== LP search ===")
     rows, solutions = aha.search_layers(

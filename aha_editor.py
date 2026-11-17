@@ -418,6 +418,45 @@ def build_direction_unmatched(collected: dict) -> Dict[int, np.ndarray]:
     return out
 
 
+@contextmanager
+def steer(model, layer_vecs: Dict[int, Tuple[np.ndarray, float]]):
+    """Add alpha*u to each listed decoder layer's residual output during
+    generation. {layer: (u, alpha)} — u unit-norm, alpha signed (negative
+    subtracts the direction). Reversible diagnostic: is u causal at all?"""
+    layers = decoder_layers(model)
+    handles = []
+    for l, (u, alpha) in layer_vecs.items():
+        vec = torch.tensor(alpha * np.asarray(u, np.float32))
+
+        def make(v=vec):
+            def hook(mod, inp, out):
+                h = out[0] if isinstance(out, tuple) else out
+                hh = h + v.to(device=h.device, dtype=h.dtype)[None, None, :]
+                return (hh,) + tuple(out[1:]) if isinstance(out, tuple) else hh
+            return hook
+        handles.append(layers[l].register_forward_hook(make()))
+    try:
+        yield
+    finally:
+        for hd in handles:
+            hd.remove()
+
+
+def proj_gap(collected: dict, u: Dict[int, np.ndarray]) -> Dict[int, float]:
+    """Mean residual-u gap between in-loop and productive positions, per
+    layer: (loop_resid - prod_resid)·u. Natural scale for steer alpha —
+    alpha = k * gap moves a productive token's projection by k gaps."""
+    resid, labels = collected["resid"], collected["meta"]["label"]
+    out = {}
+    for l, vec in u.items():
+        r = np.asarray(resid[l], np.float32)
+        loop, prod = r[labels == 2], r[labels == 0]
+        if len(loop) < 20 or len(prod) < 20:
+            continue
+        out[l] = float(loop.mean(0) @ vec - prod.mean(0) @ vec)
+    return out
+
+
 # ======================================================================
 # Part 5 — the linear program (ported from aha/edit.py, from Barry's
 # weight-space-lp, MIT): PDHG, L1-sparse v.
