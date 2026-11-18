@@ -1,0 +1,208 @@
+"""
+Eval registry — one pluggable scoring surface for every keep/revert loop.
+
+Every experiment mode in this workbench reduces to the same skeleton:
+mutate weights -> score behavior -> keep/revert. This module unifies the
+scorers behind ``run_eval(name, model, tok, label, cfg) -> record`` and a
+shared ``HISTORY`` so deltas are comparable across eval kinds.
+
+Registered evals:
+
+- ``combined``        mc_acc + ppl canary (the original EvalProber pair)
+- ``mc_probes``       accuracy over the built-in MC probe set
+- ``perplexity``      NLL canary on a reference passage (cfg["text"] optional)
+- ``loop_rate``       generation metrics (loops, copied_frac, onset, len)
+                      on a prompt pack — the AHA keep/revert signal
+- ``custom_mc``       user-supplied MC probes (cfg["probes"] list or
+                      cfg["probes_jsonl"] JSON-lines text)
+- ``custom_text_ppl`` perplexity on user-pasted text (cfg["text"])
+- ``custom_gen``      prompt pack + check: contains / not_contains / regex /
+                      no_repeat -> pass rate per prompt
+
+Custom evals are DATA-defined only — no arbitrary code, so the surface is
+safe to expose through the remote pod endpoint.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import time
+from typing import Any, Callable, Dict, List, Optional
+
+import torch
+
+from eval_probe import EvalProber, PROBES
+
+HISTORY: List[Dict[str, Any]] = []
+
+# Prompts that reliably stress-test verbatim repetition on small models —
+# arithmetic + list tasks where degenerate looping is common.
+DEFAULT_LOOP_PROMPTS = [
+    "Question: What is 17 + 25?\nAnswer:",
+    "Question: What is 144 divided by 12?\nAnswer:",
+    "Question: What is 9 times 8?\nAnswer:",
+    "List the numbers from 1 to 20, separated by commas:",
+    "Write a short story about a robot learning to paint.",
+    "Question: What is the capital of Australia?\nAnswer:",
+]
+
+
+def _probes_from_cfg(cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Custom MC probes from a list of dicts or JSONL text."""
+    if cfg.get("probes"):
+        return list(cfg["probes"])
+    text = cfg.get("probes_jsonl") or ""
+    out = []
+    for line in text.splitlines():
+        line = line.strip()
+        if line:
+            out.append(json.loads(line))
+    if not out:
+        raise ValueError("custom_mc needs cfg['probes'] or cfg['probes_jsonl']")
+    return out
+
+
+@torch.no_grad()
+def _generate_ids(model, tok, prompt: str, max_new: int) -> List[int]:
+    dev = next(model.parameters()).device
+    ids = torch.tensor([tok(prompt, add_special_tokens=False).input_ids],
+                       device=dev)
+    out = model.generate(ids, max_new_tokens=max_new, do_sample=False,
+                         pad_token_id=tok.eos_token_id)
+    return out[0, ids.shape[1]:].tolist()
+
+
+def ev_combined(model, tok, cfg):
+    ep = EvalProber(model, tok)
+    mc = ep.mc_accuracy()
+    return {"mc_acc": round(mc["accuracy"], 4), "mc_n": mc["n"],
+            "ppl": round(ep.perplexity(cfg.get("text") or None), 3)}
+
+
+def ev_mc_probes(model, tok, cfg):
+    r = EvalProber(model, tok).mc_accuracy()
+    return {"mc_acc": round(r["accuracy"], 4), "mc_n": r["n"]}
+
+
+def ev_perplexity(model, tok, cfg):
+    return {"ppl": round(EvalProber(model, tok).perplexity(
+        cfg.get("text") or None), 3)}
+
+
+def ev_custom_text_ppl(model, tok, cfg):
+    text = cfg.get("text")
+    if not text:
+        raise ValueError("custom_text_ppl needs cfg['text']")
+    return {"ppl": round(EvalProber(model, tok).perplexity(text), 3)}
+
+
+def ev_custom_mc(model, tok, cfg):
+    r = EvalProber(model, tok).mc_accuracy(_probes_from_cfg(cfg))
+    return {"mc_acc": round(r["accuracy"], 4), "mc_n": r["n"]}
+
+
+def ev_loop_rate(model, tok, cfg):
+    from aha_editor import dup_mask, onset
+    import numpy as np
+    prompts = cfg.get("prompts") or DEFAULT_LOOP_PROMPTS
+    max_new = int(cfg.get("max_new", 256))
+    rows = []
+    min_tail = max(32, max_new // 4)
+    for p in prompts:
+        ids = _generate_ids(model, tok, p, max_new)
+        dup = dup_mask(np.asarray(ids))
+        o = onset(dup, min_tail=min_tail)
+        rows.append({"prompt": p[:40], "cut": len(ids) >= max_new,
+                     "loops": o is not None,
+                     "onset_frac": None if o is None else o / len(dup),
+                     "copied": float(dup.mean()), "len": len(ids)})
+    onsets = [r["onset_frac"] for r in rows if r["onset_frac"] is not None]
+    return {"n": len(rows), "cut": sum(r["cut"] for r in rows),
+            "loops": sum(r["loops"] for r in rows),
+            "copied_frac": round(float(np.mean(
+                [r["copied"] for r in rows])), 3),
+            "onset_frac": (round(float(np.mean(onsets)), 3)
+                           if onsets else None),
+            "mean_len": int(np.mean([r["len"] for r in rows]))}
+
+
+def ev_custom_gen(model, tok, cfg):
+    prompts = cfg.get("prompts") or []
+    if not prompts:
+        raise ValueError("custom_gen needs cfg['prompts'] (list)")
+    check = cfg.get("check", "contains")
+    expected = cfg.get("expected", "")
+    max_new = int(cfg.get("max_new", 80))
+    import numpy as np
+    from aha_editor import dup_mask
+    rows, passed = [], 0
+    for p in prompts:
+        ids = _generate_ids(model, tok, p, max_new)
+        text = tok.decode(ids)
+        if check == "contains":
+            ok = expected.lower() in text.lower()
+        elif check == "not_contains":
+            ok = expected.lower() not in text.lower()
+        elif check == "regex":
+            ok = re.search(expected, text) is not None
+        elif check == "no_repeat":
+            ok = float(dup_mask(np.asarray(ids)).mean()) < 0.3
+        else:
+            raise ValueError(f"unknown check {check!r}")
+        passed += ok
+        rows.append({"prompt": p[:40], "ok": ok, "output": text[:160]})
+    return {"pass_rate": round(passed / len(prompts), 3),
+            "n": len(prompts), "details": rows}
+
+
+EVALS: Dict[str, Callable] = {
+    "combined": ev_combined,
+    "mc_probes": ev_mc_probes,
+    "perplexity": ev_perplexity,
+    "custom_text_ppl": ev_custom_text_ppl,
+    "custom_mc": ev_custom_mc,
+    "loop_rate": ev_loop_rate,
+    "custom_gen": ev_custom_gen,
+}
+
+EVAL_DESCS = {
+    "combined": "mc_acc (28 probes) + perplexity canary",
+    "mc_probes": "MC accuracy over the built-in probe set",
+    "perplexity": "NLL canary on a reference passage (or cfg text)",
+    "custom_text_ppl": "perplexity on user-pasted text",
+    "custom_mc": "MC accuracy on user probes (JSONL or list)",
+    "loop_rate": "generation loop metrics on a prompt pack (AHA signal)",
+    "custom_gen": "prompt pack + contains/regex/no_repeat check",
+}
+
+
+def run_eval(name: str, model, tok, label: str = "",
+             cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Run a registered eval and append the standardized record to HISTORY."""
+    fn = EVALS.get(name)
+    if fn is None:
+        raise ValueError(f"unknown eval {name!r}; choices: {sorted(EVALS)}")
+    metrics = fn(model, tok, cfg or {})
+    details = metrics.pop("details", None)
+    rec = {"label": label or f"{name}{len(HISTORY)}", "eval": name,
+           "t": round(time.time(), 1), **metrics}
+    HISTORY.append(rec)
+    if details is not None:
+        rec["details"] = details
+    return rec
+
+
+def history_text() -> str:
+    if not HISTORY:
+        return "No evals yet."
+    keys: List[str] = []
+    for r in HISTORY:
+        for k in r:
+            if k not in ("label", "t", "details") and k not in keys:
+                keys.append(k)
+    lines = [f"{'label':<16} " + " ".join(f"{k:>12.12}" for k in keys)]
+    for r in HISTORY:
+        lines.append(f"{r['label']:<16.16} " + " ".join(
+            f"{str(r.get(k, '')):>12.12}" for k in keys))
+    return "\n".join(lines)

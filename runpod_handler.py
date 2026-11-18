@@ -487,7 +487,10 @@ def eval_probe():
     data = request.get_json(force=True) or {}
     try:
         with _lock:
-            r = _get_eval_prober().evaluate(data.get("label", ""))
+            import eval_registry
+            r = eval_registry.run_eval(
+                data.get("eval") or "combined", _model, _tokenizer,
+                data.get("label", ""), data.get("cfg") or {})
             return jsonify(r)
     except Exception as e:
         return jsonify({"error": str(e)}), 500

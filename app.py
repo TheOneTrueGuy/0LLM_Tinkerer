@@ -635,14 +635,17 @@ def create_interface():
     def _rp_url():
         return runpod_state["proxy_url"]
 
-    def rp_eval(label):
+    def rp_eval(eval_name, label):
         if not _rp_url():
             return "No active pod."
         try:
-            r = runpod_manager.remote_eval(_rp_url(), label or "")
+            r = runpod_manager.remote_eval(
+                _rp_url(), label or "", eval_name=eval_name or "combined")
             if "error" in r:
                 return r["error"]
-            return f"mc_acc {r['mc_acc']:.3f} ({r['mc_n']})   ppl {r['ppl']:.2f}"
+            show = {k: v for k, v in r.items()
+                    if k not in ("details", "t")}
+            return json.dumps(show, default=str)
         except Exception as e:
             return f"Remote eval failed: {e}"
 
@@ -1678,18 +1681,38 @@ def create_interface():
                 model_manager.model, model_manager.tokenizer)
         return model_manager.eval_prober
 
-    def ev_run(label):
+    def ev_run(kind, label, ev_input, check, expected, max_new):
         if model_manager.model is None:
             return "Load a base model first.", ""
-        ep = _ev_prober()
-        r = ep.evaluate((label or "").strip() or f"eval{len(ep.history)}")
-        return (f"mc_acc {r['mc_acc']:.3f} ({r['mc_n']} probes)   "
-                f"ppl {r['ppl']:.2f}"), ep.history_text()
+        import eval_registry
+        cfg: dict = {}
+        lines = [l for l in (ev_input or "").splitlines() if l.strip()]
+        if kind == "custom_mc":
+            cfg["probes_jsonl"] = ev_input
+        elif kind == "custom_text_ppl":
+            cfg["text"] = ev_input
+        elif kind == "loop_rate":
+            if lines:
+                cfg["prompts"] = lines
+            cfg["max_new"] = int(max_new)
+        elif kind == "custom_gen":
+            cfg["prompts"] = lines
+            cfg["check"], cfg["expected"] = check, expected
+            cfg["max_new"] = int(max_new)
+        elif kind in ("perplexity", "combined") and ev_input.strip():
+            cfg["text"] = ev_input
+        try:
+            r = eval_registry.run_eval(
+                kind, model_manager.model, model_manager.tokenizer,
+                (label or "").strip(), cfg)
+        except Exception as e:
+            return f"Eval failed: {e}", eval_registry.history_text()
+        show = {k: v for k, v in r.items() if k != "details"}
+        return json.dumps(show, default=str), eval_registry.history_text()
 
     def ev_clear():
-        ep = model_manager.eval_prober
-        if ep:
-            ep.history = []
+        import eval_registry
+        eval_registry.HISTORY.clear()
         return "History cleared.", ""
 
     # --- WSP agent: an LLM driving the op surface via OpenRouter ---
@@ -2406,13 +2429,26 @@ def create_interface():
 
             with gr.TabItem("Eval Probe"):
                 gr.Markdown(
-                    "Quantitative keep/revert signal. `mc_acc` scores 28 "
-                    "multiple-choice probes by answer-letter logprob (works "
-                    "on weak models); `ppl` is a fixed-passage fluency "
-                    "canary. **Workflow: eval → edit → eval → compare.** "
-                    "The agent uses the same probe for its own decisions."
+                    "Quantitative keep/revert signal — pick a scorer, run "
+                    "it before and after an edit, compare the delta. "
+                    "`combined` is the classic pair (28-probe `mc_acc` + "
+                    "perplexity canary); `loop_rate` runs generation loop "
+                    "metrics (the AHA signal); custom evals take "
+                    "data-defined probes/prompts below. The agent uses the "
+                    "same registry for its own decisions."
                 )
                 with gr.Row():
+                    ev_kind = gr.Dropdown(
+                        choices=[
+                            ("combined (mc_acc + ppl)", "combined"),
+                            ("mc_probes only", "mc_probes"),
+                            ("perplexity canary", "perplexity"),
+                            ("loop_rate (AHA metrics)", "loop_rate"),
+                            ("custom_mc (probes JSONL)", "custom_mc"),
+                            ("custom_text_ppl", "custom_text_ppl"),
+                            ("custom_gen (prompt + check)", "custom_gen"),
+                        ],
+                        value="combined", label="Eval", scale=2)
                     ev_label = gr.Textbox(
                         label="Eval label", scale=2,
                         placeholder="e.g., base, after-merge-0.45",
@@ -2420,6 +2456,27 @@ def create_interface():
                     ev_run_btn = gr.Button("Run eval", variant="primary",
                                            scale=1)
                     ev_clear_btn = gr.Button("Clear history", scale=1)
+                with gr.Accordion(
+                        "Eval input (custom_mc / custom_text_ppl / "
+                        "loop_rate / custom_gen)", open=False):
+                    ev_input = gr.Textbox(
+                        label="Input", lines=6,
+                        placeholder=(
+                            "custom_mc: one JSON probe per line "
+                            '{"q": "...", "choices": [...], "a": 0}\n'
+                            "custom_text_ppl: paste reference text\n"
+                            "loop_rate / custom_gen: one prompt per line "
+                            "(blank = built-in pack for loop_rate)"))
+                    with gr.Row():
+                        ev_check = gr.Dropdown(
+                            choices=["contains", "not_contains", "regex",
+                                     "no_repeat"],
+                            value="contains", label="custom_gen check")
+                        ev_expected = gr.Textbox(
+                            label="expected (contains/regex)", scale=2)
+                        ev_maxnew = gr.Slider(
+                            32, 1024, value=256, step=32,
+                            label="max new tokens")
                 ev_result = gr.Textbox(label="Latest result",
                                        interactive=False)
                 ev_history = gr.Textbox(label="Eval history", lines=12,
@@ -2896,8 +2953,12 @@ renderPlot();
                         "checkpoints on GPU."
                     )
                     with gr.Row():
+                        rp_eval_kind = gr.Dropdown(
+                            choices=["combined", "mc_probes", "perplexity",
+                                     "loop_rate"],
+                            value="combined", label="Eval", scale=1)
                         rp_eval_label = gr.Textbox(
-                            label="Eval label", scale=2,
+                            label="Eval label", scale=1,
                             placeholder="base, after-merge...",
                         )
                         rp_eval_btn = gr.Button("Run eval on pod", scale=1)
@@ -3484,7 +3545,7 @@ renderPlot();
             outputs=[runpod_remote_output, history_view]
         )
         # Remote weight-space ops
-        rp_eval_btn.click(fn=rp_eval, inputs=[rp_eval_label],
+        rp_eval_btn.click(fn=rp_eval, inputs=[rp_eval_kind, rp_eval_label],
                           outputs=[rp_eval_out])
         rp_ref_check_btn.click(fn=rp_ref_check, inputs=[rp_ref_name],
                            outputs=[rp_ws_status])
@@ -3695,7 +3756,9 @@ renderPlot();
                          outputs=[fw_log])
 
         # Eval Probe
-        ev_run_btn.click(fn=ev_run, inputs=[ev_label],
+        ev_run_btn.click(fn=ev_run,
+                         inputs=[ev_kind, ev_label, ev_input, ev_check,
+                                 ev_expected, ev_maxnew],
                          outputs=[ev_result, ev_history])
         ev_clear_btn.click(fn=ev_clear, outputs=[ev_result, ev_history])
 

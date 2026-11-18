@@ -119,10 +119,18 @@ def make_tools(model_manager) -> List[Dict[str, Any]]:
            ["asks", "answer"]),
         fn("undo_fact", "Remove the most recently written fact"),
         fn("evaluate",
-           "Quantitative eval: mc_acc over 28 multiple-choice probes plus "
-           "perplexity on a fixed passage. Run before and after edits — the "
-           "delta is your keep/revert signal. Label each run.",
-           {"label": {"type": "string"}}),
+           "Quantitative eval — the keep/revert signal; run before and "
+           "after edits. 'combined' (default) scores mc_acc over 28 probes "
+           "plus a perplexity canary; other choices: mc_probes, perplexity, "
+           "loop_rate (generation loop metrics), custom_mc / custom_text_ppl "
+           "/ custom_gen (data-defined custom evals — pass probe/prompt/text "
+           "payloads in cfg). Label each run.",
+           {"label": {"type": "string"},
+            "eval": {"type": "string",
+                     "enum": ["combined", "mc_probes", "perplexity",
+                              "custom_text_ppl", "custom_mc", "loop_rate",
+                              "custom_gen"]},
+            "cfg": {"type": "object"}}),
         fn("check_compat",
            "Estimate merge coverage vs a reference checkpoint — config "
            "dims only, no weights downloaded",
@@ -257,12 +265,12 @@ def make_executor(model_manager) -> Callable[[str, Dict[str, Any]], str]:
                     return json.dumps({"error": "no facts written"})
                 return json.dumps({"result": mm.fact_editor.undo_last()})
             if name == "evaluate":
-                from eval_probe import EvalProber
-                if mm.eval_prober is None:
-                    mm.eval_prober = EvalProber(mm.model, mm.tokenizer)
-                r = mm.eval_prober.evaluate(args.get("label") or "")
-                r["history"] = mm.eval_prober.history
-                return json.dumps(r)
+                import eval_registry
+                r = eval_registry.run_eval(
+                    args.get("eval") or "combined", mm.model, mm.tokenizer,
+                    args.get("label") or "", args.get("cfg") or {})
+                r["history"] = eval_registry.HISTORY
+                return json.dumps(r, default=str)
             wm = getattr(mm, "weight_merger", None)
             if name == "check_compat":
                 if wm is None:
@@ -359,7 +367,9 @@ def make_remote_executor(rm, proxy_url: str) -> Callable[[str, Dict[str, Any]], 
                 return json.dumps(rm.remote_fact_undo(proxy_url))
             if name == "evaluate":
                 return json.dumps(
-                    rm.remote_eval(proxy_url, args.get("label") or ""))
+                    rm.remote_eval(proxy_url, args.get("label") or "",
+                                   args.get("eval") or "combined",
+                                   args.get("cfg") or {}))
             if name == "check_compat":
                 return json.dumps(
                     rm.remote_ws_check(proxy_url, args["name"]))

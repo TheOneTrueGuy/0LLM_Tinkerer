@@ -240,6 +240,7 @@ class RunPodManager:
         "weight_space.py",
         "fact_editor.py",
         "eval_probe.py",
+        "eval_registry.py",
         "vlm_fact_editor.py",
         "aha_editor.py",
         "aha_test.py",
@@ -580,9 +581,13 @@ class RunPodManager:
         resp.raise_for_status()
         return resp.json()
 
-    def remote_eval(self, proxy_url: str, label: str = "") -> Dict[str, Any]:
+    def remote_eval(self, proxy_url: str, label: str = "",
+                    eval_name: str = "combined",
+                    cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         r = requests.post(
-            f"{proxy_url}/eval", json={"label": label}, timeout=600)
+            f"{proxy_url}/eval",
+            json={"label": label, "eval": eval_name, "cfg": cfg or {}},
+            timeout=600)
         return r.json()
 
     def remote_fact_write(
