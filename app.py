@@ -36,6 +36,7 @@ from circuit_tracer_demo import run_circuit_tracer
 from neuron_explorer import NeuronExplorer, NeuronSculptor, neuron_write_column, list_runs
 import session_store
 import wsp_agent
+from iwsp_driver import TASKS as iwsp_tasks
 from weight_space import WeightMerger, MERGE_MODES
 import plotly.graph_objects as go
 
@@ -558,6 +559,8 @@ def create_interface():
         "proxy_url": None,
         "gpu_type": GPU_PREFERENCE[0],
     }
+    # --- iWSP autoresearch state (local detached driver subprocess) ---
+    iwsp_state = {"proc": None, "log": "", "run_dir": ""}
     default_runpod_key = load_runpod_api_key(os.path.dirname(os.path.abspath(__file__)))
     if default_runpod_key:
         runpod_manager.api_key = default_runpod_key
@@ -1739,6 +1742,82 @@ def create_interface():
         except Exception as e:
             yield "\n\n".join(log) + f"\n\nAgent error: {e}"
 
+    # --- iWSP autoresearch: OpenRouter agent hand-writing transformers ---
+
+    def iwsp_launch(task, model, seed, target, sessions, turns):
+        import subprocess
+        proc = iwsp_state["proc"]
+        if proc is not None and proc.poll() is None:
+            return "An iWSP run is already in progress."
+        model = (model or "").strip() or "deepseek/deepseek-v4.1-flash-1017"
+        short = model.split("/")[-1].replace(":", "-")
+        tag = f"{task}-{short}-s{int(seed)}"
+        run_dir = os.path.join("iwsp_runs", short, tag)
+        log_path = run_dir + ".driver.log"
+        os.makedirs(os.path.dirname(run_dir) or ".", exist_ok=True)
+        args = [sys.executable, "iwsp_driver.py", "--task", task,
+                "--model", model, "--seed", str(int(seed)),
+                "--max-sessions", str(int(sessions)),
+                "--max-turns", str(int(turns))]
+        if target and int(target) > 0:
+            args += ["--target", str(int(target))]
+        fh = open(log_path, "w", encoding="utf-8")
+        iwsp_state["proc"] = subprocess.Popen(
+            args, stdout=fh, stderr=subprocess.STDOUT)
+        iwsp_state["log"], iwsp_state["run_dir"] = log_path, run_dir
+        return f"Launched (pid {iwsp_state['proc'].pid}) → {run_dir}\nlog: {log_path}"
+
+    def iwsp_refresh():
+        import csv
+        proc, log_path, run_dir = (iwsp_state["proc"], iwsp_state["log"],
+                                   iwsp_state["run_dir"])
+        status = ("no run launched" if proc is None else
+                "running" if proc.poll() is None else
+                f"exited:{proc.returncode}")
+        out = [f"status: {status}"]
+        csv_path = os.path.join(run_dir, "results", "overall_results.csv")
+        if os.path.exists(csv_path):
+            with open(csv_path, newline="") as f:
+                rows = list(csv.DictReader(f))
+            best = max((float(r["accuracy"]) for r in rows
+                        if r.get("accuracy")), default=0.0)
+            out.append(f"attempts: {len(rows)}   best_acc: {best:.4f}")
+        if os.path.exists(log_path):
+            lines = open(log_path, encoding="utf-8",
+                         errors="replace").read().splitlines()
+            results = [l for l in lines if l.startswith("RESULT")]
+            out += results[-3:]
+            out.append("--- log tail ---")
+            out += lines[-20:]
+        return "\n".join(out)
+
+    def iwsp_list_runs():
+        import glob
+        metas = sorted(glob.glob(os.path.join("iwsp_runs", "*", "*",
+                                              "metadata.json")))
+        return gr.update(choices=[os.path.dirname(m) for m in metas])
+
+    def iwsp_inspect(run_dir):
+        if not run_dir or not os.path.isdir(run_dir):
+            return "Pick a run folder first."
+        out = [f"run: {run_dir}"]
+        meta_path = os.path.join(run_dir, "metadata.json")
+        if os.path.exists(meta_path):
+            meta = json.load(open(meta_path))
+            out.append(json.dumps(
+                {k: meta.get(k) for k in
+                 ("task", "model", "attempts", "best_acc", "target")},
+                indent=1))
+        csv_path = os.path.join(run_dir, "results", "overall_results.csv")
+        if os.path.exists(csv_path):
+            out.append("--- overall_results.csv ---")
+            out.append(open(csv_path).read()[:4000])
+        lib = os.path.join(run_dir, "interpretable_transformers_lib")
+        if os.path.isdir(lib):
+            snaps = sorted(os.listdir(lib))
+            out.append(f"snapshots: {', '.join(snaps)}")
+        return "\n".join(out)
+
     def _as_choice(value):
         if isinstance(value, (list, tuple)):
             return value[0] if value else None
@@ -2520,6 +2599,49 @@ def create_interface():
                 wsp_run_btn = gr.Button("Run agent", variant="primary")
                 wsp_log = gr.Textbox(label="Agent trace", lines=24,
                                      interactive=False)
+
+            with gr.TabItem("iWSP Autoresearch"):
+                gr.Markdown(
+                    "Interpretable Weight-Space Programming: an OpenRouter "
+                    "agent hand-writes a transformer's weights in closed "
+                    "form (no training) and iterates against the harness "
+                    "evaluator until the attempt target. Runs **locally** "
+                    "as a detached process — the eval is CPU-only. Results "
+                    "live in `iwsp_runs/` (gitignored): source snapshots, "
+                    "results CSV, transcripts."
+                )
+                with gr.Row():
+                    iw_task = gr.Dropdown(
+                        choices=sorted(iwsp_tasks), value="parity-upto10-bits",
+                        label="Task", scale=2)
+                    iw_model = gr.Textbox(
+                        label="Agent model (OpenRouter)",
+                        value="deepseek/deepseek-v4.1-flash-1017", scale=2)
+                    iw_seed = gr.Number(value=1, label="Seed", scale=1)
+                with gr.Row():
+                    iw_target = gr.Slider(
+                        0, 60, value=8, step=1,
+                        label="Target attempts (0 = per-difficulty)",
+                        scale=2)
+                    iw_sessions = gr.Slider(1, 25, value=4, step=1,
+                                          label="Max sessions")
+                    iw_turns = gr.Slider(10, 120, value=60, step=10,
+                                         label="Max turns/session")
+                with gr.Row():
+                    iw_launch_btn = gr.Button("Launch run",
+                                              variant="primary")
+                    iw_refresh_btn = gr.Button("Refresh status")
+                iw_status = gr.Textbox(label="Status / log tail", lines=14,
+                                       interactive=False)
+                with gr.Accordion("Run browser", open=False):
+                    with gr.Row():
+                        iw_runs = gr.Dropdown(
+                            choices=[], label="Run folder", scale=2,
+                            interactive=True)
+                        iw_list_btn = gr.Button("List runs", scale=1)
+                        iw_inspect_btn = gr.Button("Inspect", scale=1)
+                    iw_detail = gr.Textbox(label="Run detail", lines=16,
+                                           interactive=False)
 
             with gr.TabItem("Text Generation"):
                 with gr.Row():
@@ -3774,6 +3896,14 @@ renderPlot();
             inputs=[wsp_target, wsp_model, wsp_instruction, wsp_steps],
             outputs=[wsp_log],
         )
+        iw_launch_btn.click(fn=iwsp_launch,
+                            inputs=[iw_task, iw_model, iw_seed, iw_target,
+                                    iw_sessions, iw_turns],
+                            outputs=[iw_status])
+        iw_refresh_btn.click(fn=iwsp_refresh, outputs=[iw_status])
+        iw_list_btn.click(fn=iwsp_list_runs, outputs=[iw_runs])
+        iw_inspect_btn.click(fn=iwsp_inspect, inputs=[iw_runs],
+                             outputs=[iw_detail])
 
         # Cached-model pickers fill their textboxes
         cached_models.change(fn=lambda v: v, inputs=cached_models,
