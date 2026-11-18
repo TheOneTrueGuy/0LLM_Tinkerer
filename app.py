@@ -931,6 +931,64 @@ def create_interface():
         except Exception as e:
             return f"Failed to list GPUs: {e}"
 
+    # --- Remote AHA experiment jobs (generic script-runner endpoints) ---
+    aha_job = {"id": None, "offset": 0, "log": ""}
+
+    def rp_aha_launch(model, mode, problems, max_new, cont, margin, temp,
+                      mults, out_dir, extra):
+        if not runpod_state["proxy_url"]:
+            return "No pod connected — deploy or connect above.", "", ""
+        args = [f"--model {model.strip()}",
+                f"--problems {int(problems)}",
+                f"--max-new {int(max_new)}",
+                f"--cont {int(cont)}",
+                f"--margin {int(margin)}",
+                f"--temp {temp}",
+                f"--out {(out_dir or 'aha_run').strip()}"]
+        steer_map = {"steer both": "both", "steer +u": "plus",
+                     "steer −u": "minus"}
+        if mode == "pro-loop":
+            args.append("--pro")
+        elif mode in steer_map or mode == "steer random":
+            if mode == "steer random":
+                args += ["--steer", "both", "--steer-random"]
+            else:
+                args += ["--steer", steer_map[mode]]
+            ms = " ".join(str(m).strip() for m in str(mults).split()
+                          if str(m).strip())
+            if ms:
+                args += ["--steer-mults", ms]
+        if extra and extra.strip():
+            args.append(extra.strip())
+        try:
+            r = runpod_manager.remote_run_script(
+                runpod_state["proxy_url"], "aha_test.py", " ".join(args))
+        except Exception as e:
+            return f"launch failed: {e}", "", ""
+        if "job_id" not in r:
+            return f"launch failed: {r}", "", ""
+        aha_job.update(id=r["job_id"], offset=0, log="")
+        return (f"job {r['job_id']} launched — refresh to poll\n"
+                f"{r.get('cmd', '')}"), "", ""
+
+    def rp_aha_refresh():
+        if not aha_job["id"]:
+            return "No job launched yet.", "", aha_job["log"][-12000:]
+        try:
+            lg = runpod_manager.remote_job_log(
+                runpod_state["proxy_url"], aha_job["id"], aha_job["offset"])
+        except Exception as e:
+            return f"poll failed: {e}", "", aha_job["log"][-12000:]
+        aha_job["offset"] = lg.get("offset", aha_job["offset"])
+        aha_job["log"] += lg.get("text", "")
+        result = ""
+        for line in aha_job["log"].splitlines():
+            if "RESULT:" in line:
+                result = line.split("RESULT:", 1)[1].strip()
+        status = (f"job {aha_job['id']}: {lg.get('status', '?')} "
+                  f"({lg.get('seconds', 0)}s)")
+        return status, result, aha_job["log"][-12000:]
+
     # --- Neuron Explorer helpers ---
     # Steering-first neuron exploration (lyramakesmusic/neuron-explorer method):
     # push one MLP neuron up/down at generation time, keep every rollout.
@@ -2917,6 +2975,61 @@ renderPlot();
                     vlm_cmp_btn = gr.Button("Compare base vs edited")
                     vlm_cmp_out = gr.Textbox(label="Compare result", lines=6)
 
+                with gr.Accordion(
+                    "AHA behavior editing — de-loop / pro-loop / steer probe",
+                    open=False,
+                ):
+                    gr.Markdown(
+                        "Runs `aha_test.py` on the pod as a background job: "
+                        "detector → matched pairs → direction → LP → "
+                        "rank-one write → paired eval. **steer** modes add "
+                        "±α·u to the residual with no weight edit — the "
+                        "causal probe for the direction; **random** is the "
+                        "perturbation control. The job keeps running if you "
+                        "disconnect; Refresh polls the log. Artifacts land "
+                        "in `/workspace/<artifacts dir>` on the pod."
+                    )
+                    with gr.Row():
+                        aha_model = gr.Textbox(
+                            label="Model", value="Qwen/Qwen2.5-0.5B",
+                            scale=2)
+                        aha_mode = gr.Dropdown(
+                            ["de-loop", "pro-loop", "steer both",
+                             "steer +u", "steer −u", "steer random"],
+                            value="steer both", label="Mode", scale=1)
+                        aha_out = gr.Textbox(
+                            label="Artifacts dir", value="aha_run", scale=1)
+                    with gr.Row():
+                        aha_problems = gr.Slider(
+                            4, 32, value=12, step=1, label="Problems")
+                        aha_maxnew = gr.Dropdown(
+                            [4096, 8192, 16384], value=8192,
+                            label="Max new tokens")
+                        aha_cont = gr.Slider(
+                            4, 16, value=8, step=1, label="Continuations")
+                        aha_margin = gr.Slider(
+                            8, 256, value=64, step=8, label="Prefix margin")
+                        aha_temp = gr.Slider(
+                            0.6, 1.5, value=1.1, step=0.05,
+                            label="Cont. temp")
+                    with gr.Row():
+                        aha_mults = gr.Textbox(
+                            label="Steer mults (× gap)", value="0.5 1.0 2.0",
+                            scale=1)
+                        aha_extra = gr.Textbox(
+                            label="Extra args", scale=2,
+                            placeholder="--topk 3 --problems-file f.json")
+                    with gr.Row():
+                        aha_launch_btn = gr.Button(
+                            "Launch AHA run", variant="primary", scale=1)
+                        aha_refresh_btn = gr.Button("Refresh job", scale=1)
+                    aha_status = gr.Textbox(
+                        label="Job status", lines=2, interactive=False)
+                    aha_result = gr.Textbox(
+                        label="Latest RESULT", lines=4, interactive=False)
+                    aha_log = gr.Textbox(
+                        label="Job log tail", lines=14, interactive=False)
+
             with gr.TabItem("Circuit Tracer"):
                 gr.Markdown("## Circuit Tracer")
                 gr.Markdown(
@@ -3395,6 +3508,15 @@ renderPlot();
                           outputs=[vlm_cmp_out])
         vlm_undo_btn.click(fn=rp_vlm_undo, outputs=[vlm_status])
         vlm_save_btn.click(fn=rp_save_download, outputs=[vlm_status])
+        aha_launch_btn.click(
+            fn=rp_aha_launch,
+            inputs=[aha_model, aha_mode, aha_problems, aha_maxnew,
+                    aha_cont, aha_margin, aha_temp, aha_mults, aha_out,
+                    aha_extra],
+            outputs=[aha_status, aha_result, aha_log])
+        aha_refresh_btn.click(
+            fn=rp_aha_refresh,
+            outputs=[aha_status, aha_result, aha_log])
 
         runpod_inv_btn.click(
             fn=runpod_remote_invert,

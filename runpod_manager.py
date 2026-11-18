@@ -679,6 +679,27 @@ class RunPodManager:
         resp.raise_for_status()
         return resp.text
 
+    # --- Generic script jobs ---
+
+    def remote_run_script(
+        self, proxy_url: str, script: str, args: str = "",
+    ) -> Dict[str, Any]:
+        r = requests.post(f"{proxy_url}/run",
+                          json={"script": script, "args": args}, timeout=60)
+        return r.json()
+
+    def remote_job_status(self, proxy_url: str, job_id: str) -> Dict[str, Any]:
+        return requests.get(f"{proxy_url}/job/{job_id}", timeout=30).json()
+
+    def remote_job_log(
+        self, proxy_url: str, job_id: str, offset: int = 0,
+    ) -> Dict[str, Any]:
+        return requests.get(f"{proxy_url}/job/{job_id}/log",
+                            params={"offset": offset}, timeout=60).json()
+
+    def remote_jobs(self, proxy_url: str) -> Dict[str, Any]:
+        return requests.get(f"{proxy_url}/jobs", timeout=30).json()
+
     # --- Serverless endpoints ---
 
     def list_endpoints(self) -> List[Dict[str, Any]]:

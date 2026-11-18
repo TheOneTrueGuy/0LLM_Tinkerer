@@ -16,8 +16,12 @@ Exposes a small HTTP API that mirrors the local ModelManager operations:
 
 import logging
 import os
+import re
+import subprocess
 import threading
+import time
 import traceback
+import uuid
 from typing import Dict, Any, List
 
 from flask import Flask, jsonify, request, send_file
@@ -743,6 +747,80 @@ def download_model():
     return send_file(zpath, as_attachment=True,
                      download_name="edited_model.zip",
                      mimetype="application/zip")
+
+
+# ======================================================================
+# Generic script jobs — run a workspace script as a background job and
+# poll status/logs from the UI. The remote-runner path for experiments
+# (AHA probes, etc.) that don't fit a synchronous request/response.
+
+_jobs: Dict[str, Dict[str, Any]] = {}
+_JOB_DIR = "/workspace/jobs"
+
+
+@app.route("/run", methods=["POST"])
+def run_script():
+    """Launch a /workspace script as a background job.
+    body: {"script": "aha_test.py", "args": "--model X --steer both"}"""
+    data = request.get_json(force=True) or {}
+    script = (data.get("script") or "").strip()
+    if not re.fullmatch(r"[\w.\-]+\.(py|sh)", script):
+        return jsonify(
+            {"error": "script must be a .py or .sh filename"}), 400
+    if not os.path.exists(f"/workspace/{script}"):
+        return jsonify({"error": f"{script} not found in /workspace"}), 404
+    args = data.get("args", "")
+    job_id = uuid.uuid4().hex[:8]
+    os.makedirs(_JOB_DIR, exist_ok=True)
+    log_path = f"{_JOB_DIR}/{job_id}.log"
+    runner = "python -u" if script.endswith(".py") else "bash"
+    cmd = f"cd /workspace && {runner} {script} {args}"
+    fh = open(log_path, "w")
+    proc = subprocess.Popen(["bash", "-c", cmd], stdout=fh,
+                            stderr=subprocess.STDOUT)
+    _jobs[job_id] = {"id": job_id, "cmd": cmd, "proc": proc,
+                     "log_path": log_path, "started": time.time()}
+    logger.info(f"job {job_id}: {cmd}")
+    return jsonify({"job_id": job_id, "cmd": cmd, "log_path": log_path})
+
+
+def _job_state(j: Dict[str, Any]) -> Dict[str, Any]:
+    rc = j["proc"].poll()
+    return {"job_id": j["id"], "cmd": j["cmd"],
+            "status": "running" if rc is None else f"exited:{rc}",
+            "seconds": round(time.time() - j["started"]),
+            "log_path": j["log_path"]}
+
+
+@app.route("/jobs", methods=["GET"])
+def jobs_list():
+    return jsonify({"jobs": [_job_state(j) for j in _jobs.values()]})
+
+
+@app.route("/job/<job_id>", methods=["GET"])
+def job_status(job_id: str):
+    j = _jobs.get(job_id)
+    if j is None:
+        return jsonify({"error": "unknown job"}), 404
+    return jsonify(_job_state(j))
+
+
+@app.route("/job/<job_id>/log", methods=["GET"])
+def job_log(job_id: str):
+    """Byte-offset log tail: pass offset to stream only new output."""
+    j = _jobs.get(job_id)
+    if j is None:
+        return jsonify({"error": "unknown job"}), 404
+    offset = int(request.args.get("offset", 0))
+    try:
+        with open(j["log_path"], "rb") as fh:
+            fh.seek(offset)
+            chunk = fh.read(256 * 1024)
+            end = fh.tell()
+    except OSError as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({**_job_state(j), "offset": end,
+                    "text": chunk.decode("utf-8", "replace")})
 
 
 @app.route("/logs", methods=["GET"])
