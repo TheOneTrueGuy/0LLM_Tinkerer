@@ -165,7 +165,7 @@ class RunPodManager:
             communityPrice
             communitySpotPrice
             secureSpotPrice
-            stockStatus
+            lowestPrice(input: {gpuCount: 1}) { minimumBidPrice uninterruptablePrice }
           }
         }
         """
