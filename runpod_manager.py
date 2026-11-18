@@ -268,20 +268,24 @@ class RunPodManager:
         env: Optional[List[Dict[str, str]]] = None,
         ttl_minutes: int = 360,
         idle_minutes: int = 60,
+        notify_url: str = "",
     ) -> PodInfo:
         """Create a new GPU pod, optionally embedding a handler via dockerArgs.
 
         A pod-side watchdog (podwatch.sh) stops the pod after ttl_minutes
         regardless, or after idle_minutes with no SSH sessions, GPU/CPU
-        activity, or handler traffic. Pass 0 to disable either trip."""
+        activity, or handler traffic. Pass 0 to disable either trip.
+        notify_url: webhook POSTed when any background job finishes —
+        e.g. https://ntfy.sh/<topic> or an email API endpoint."""
         docker_args = self._build_docker_args()
 
         selected_gpu = gpu_type or GPU_PREFERENCE[0]
         safe_name = name.replace('"', "'").replace("\\", "")
         env_list = list(env or [])
         for key, val in (("POD_TTL_MIN", ttl_minutes),
-                         ("POD_IDLE_MIN", idle_minutes)):
-            if not any(e.get("key") == key for e in env_list):
+                         ("POD_IDLE_MIN", idle_minutes),
+                         ("NOTIFY_URL", notify_url)):
+            if str(val) != "" and not any(e.get("key") == key for e in env_list):
                 env_list.append({"key": key, "value": str(val)})
         if not any(e.get("key") == "PUBLIC_KEY" for e in env_list):
             pub = _find_local_pubkey()
@@ -699,6 +703,13 @@ class RunPodManager:
 
     def remote_jobs(self, proxy_url: str) -> Dict[str, Any]:
         return requests.get(f"{proxy_url}/jobs", timeout=30).json()
+
+    def remote_notify_test(
+        self, proxy_url: str, text: str = "",
+    ) -> Dict[str, Any]:
+        return requests.post(f"{proxy_url}/notify_test",
+                             json={"text": text} if text else {},
+                             timeout=30).json()
 
     # --- Serverless endpoints ---
 

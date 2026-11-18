@@ -17,6 +17,7 @@ Exposes a small HTTP API that mirrors the local ModelManager operations:
 import logging
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -756,6 +757,69 @@ def download_model():
 
 _jobs: Dict[str, Dict[str, Any]] = {}
 _JOB_DIR = "/workspace/jobs"
+
+# Job-finished notifier: a daemon thread watches _jobs; when a job exits,
+# it POSTs the RESULT line (or log tail) to NOTIFY_URL as raw text.
+# NOTIFY_URL is any webhook — ntfy.sh topic, Discord/Slack hook, email
+# API like formsubmit.co/<addr>. Optional NOTIFY_HEADER "K: V" for auth.
+
+
+def _job_notify_thread() -> None:
+    import urllib.request
+    url = os.environ.get("NOTIFY_URL", "")
+    while True:
+        time.sleep(30)
+        if not url:
+            continue
+        for j in _jobs.values():
+            if j["proc"].poll() is None or j.get("notified"):
+                continue
+            j["notified"] = True
+            try:
+                with open(j["log_path"], errors="replace") as fh:
+                    tail = fh.read()[-3000:]
+                result = next(
+                    (l for l in reversed(tail.splitlines()) if "RESULT:" in l),
+                    tail[-1500:])
+                rc = j["proc"].returncode
+                body = (f"job {j['id']} exited:{rc}\n{j['cmd']}\n\n{result}"
+                        ).encode()
+                req = urllib.request.Request(
+                    url, data=body, method="POST",
+                    headers={"Content-Type": "text/plain"})
+                hdr = os.environ.get("NOTIFY_HEADER", "")
+                if ":" in hdr:
+                    k, v = hdr.split(":", 1)
+                    req.add_header(k.strip(), v.strip())
+                urllib.request.urlopen(req, timeout=15)
+                logger.info(f"job {j['id']}: notified {url}")
+            except Exception as e:
+                logger.warning(f"notify failed for job {j['id']}: {e}")
+
+
+threading.Thread(target=_job_notify_thread, daemon=True).start()
+
+
+@app.route("/notify_test", methods=["POST"])
+def notify_test():
+    """Send a test notification to NOTIFY_URL. Optionally {"text": "..."}."""
+    import urllib.request
+    url = os.environ.get("NOTIFY_URL", "")
+    if not url:
+        return jsonify({"error": "NOTIFY_URL env not set"}), 400
+    text = (request.get_json(silent=True) or {}).get(
+        "text", f"notify test from pod {socket.gethostname()}")
+    try:
+        req = urllib.request.Request(url, data=text.encode(), method="POST",
+                                     headers={"Content-Type": "text/plain"})
+        hdr = os.environ.get("NOTIFY_HEADER", "")
+        if ":" in hdr:
+            k, v = hdr.split(":", 1)
+            req.add_header(k.strip(), v.strip())
+        r = urllib.request.urlopen(req, timeout=15)
+        return jsonify({"sent": url, "status": r.status})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/run", methods=["POST"])
