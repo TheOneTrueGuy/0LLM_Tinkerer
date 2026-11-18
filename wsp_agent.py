@@ -124,12 +124,14 @@ def make_tools(model_manager) -> List[Dict[str, Any]]:
            "plus a perplexity canary; other choices: mc_probes, perplexity, "
            "loop_rate (generation loop metrics), custom_mc / custom_text_ppl "
            "/ custom_gen (data-defined custom evals — pass probe/prompt/text "
-           "payloads in cfg). Label each run.",
+           "payloads in cfg), benchmark (standard dataset — cfg.name "
+           "e.g. 'arc_easy' or 'mmlu:astronomy', cfg.n sample size). "
+           "Label each run.",
            {"label": {"type": "string"},
             "eval": {"type": "string",
                      "enum": ["combined", "mc_probes", "perplexity",
                               "custom_text_ppl", "custom_mc", "loop_rate",
-                              "custom_gen"]},
+                              "custom_gen", "benchmark"]},
             "cfg": {"type": "object", "properties": {}}}),
         fn("check_compat",
            "Estimate merge coverage vs a reference checkpoint — config "

@@ -1674,7 +1674,8 @@ def create_interface():
 
     # --- Eval probe: quantitative keep/revert signal ---
 
-    def ev_run(kind, label, ev_input, check, expected, max_new):
+    def ev_run(kind, label, ev_input, check, expected, max_new,
+               bench, benchn):
         if model_manager.model is None:
             return "Load a base model first.", ""
         import eval_registry
@@ -1692,6 +1693,9 @@ def create_interface():
             cfg["prompts"] = lines
             cfg["check"], cfg["expected"] = check, expected
             cfg["max_new"] = int(max_new)
+        elif kind == "benchmark":
+            cfg["name"] = (bench or "").strip()
+            cfg["n"] = int(benchn)
         elif kind in ("perplexity", "combined") and (ev_input or "").strip():
             cfg["text"] = ev_input
         try:
@@ -2440,6 +2444,7 @@ def create_interface():
                             ("custom_mc (probes JSONL)", "custom_mc"),
                             ("custom_text_ppl", "custom_text_ppl"),
                             ("custom_gen (prompt + check)", "custom_gen"),
+                            ("benchmark (mmlu/arc/boolq...)", "benchmark"),
                         ],
                         value="combined", label="Eval", scale=2)
                     ev_label = gr.Textbox(
@@ -2470,6 +2475,14 @@ def create_interface():
                         ev_maxnew = gr.Slider(
                             32, 1024, value=256, step=32,
                             label="max new tokens")
+                    with gr.Row():
+                        ev_bench = gr.Textbox(
+                            label="benchmark name", scale=2,
+                            placeholder="arc_easy, boolq, piqa, hellaswag, "
+                                        "sciq, openbookqa, mmlu:<subject>")
+                        ev_benchn = gr.Slider(
+                            25, 1000, value=200, step=25,
+                            label="n samples")
                 ev_result = gr.Textbox(label="Latest result",
                                        interactive=False)
                 ev_history = gr.Textbox(label="Eval history", lines=12,
@@ -3751,7 +3764,7 @@ renderPlot();
         # Eval Probe
         ev_run_btn.click(fn=ev_run,
                          inputs=[ev_kind, ev_label, ev_input, ev_check,
-                                 ev_expected, ev_maxnew],
+                                 ev_expected, ev_maxnew, ev_bench, ev_benchn],
                          outputs=[ev_result, ev_history])
         ev_clear_btn.click(fn=ev_clear, outputs=[ev_result, ev_history])
 

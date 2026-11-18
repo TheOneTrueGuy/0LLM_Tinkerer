@@ -156,6 +156,103 @@ def ev_custom_gen(model, tok, cfg):
             "n": len(prompts), "details": rows}
 
 
+# ---------------------------------------------------------------------------
+# Benchmark evals — standard datasets normalized to our MC probe format
+# ---------------------------------------------------------------------------
+
+def _mmlu(item):
+    return {"q": item["question"], "choices": list(item["choices"]),
+            "a": int(item["answer"])}
+
+
+def _arc(item):  # also openbookqa
+    q = item.get("question") or item.get("question_stem")
+    ch = item["choices"]
+    try:
+        a = ch["label"].index(item["answerKey"])
+    except ValueError:
+        return None
+    return {"q": q, "choices": list(ch["text"]), "a": a}
+
+
+def _sciq(item, rng):
+    choices = [item["correct_answer"], item["distractor1"],
+               item["distractor2"], item["distractor3"]]
+    a = 0
+    order = list(range(len(choices)))
+    rng.shuffle(order)
+    return {"q": item["question"], "choices": [choices[i] for i in order],
+            "a": order.index(a)}
+
+
+def _boolq(item):
+    return {"q": item["question"], "choices": ["True", "False"],
+            "a": 0 if item["answer"] else 1}
+
+
+def _piqa(item):
+    return {"q": item["goal"], "choices": [item["sol1"], item["sol2"]],
+            "a": int(item["label"])}
+
+
+def _hellaswag(item):
+    return {"q": item["ctx"], "choices": list(item["endings"]),
+            "a": int(item["label"])}
+
+
+# name -> (hf_dataset, config, split, per-item converter)
+# config may contain "{subset}" filled from a "name:subset" spec
+_BENCHMARKS = {
+    "mmlu": ("cais/mmlu", "{subset}", "test", _mmlu),
+    "arc_easy": ("allenai/ai2_arc", "ARC-Easy", "validation", _arc),
+    "arc_challenge": ("allenai/ai2_arc", "ARC-Challenge", "validation", _arc),
+    "openbookqa": ("allenai/openbookqa", "main", "test", _arc),
+    "sciq": ("allenai/sciq", None, "validation", _sciq),
+    "boolq": ("google/boolq", None, "validation", _boolq),
+    "piqa": ("ybisk/piqa", None, "validation", _piqa),
+    "hellaswag": ("Rowan/hellaswag", None, "validation", _hellaswag),
+}
+
+
+def _load_benchmark(name: str, n: int, seed: int) -> List[Dict[str, Any]]:
+    """Load `name` (a preset, or "mmlu:<subject>") as probe dicts."""
+    import random
+    from datasets import load_dataset
+    base, _, subset = name.partition(":")
+    spec = _BENCHMARKS.get(base)
+    if spec is None:
+        raise ValueError(
+            f"unknown benchmark {name!r}; presets: "
+            f"{sorted(_BENCHMARKS)} (mmlu needs mmlu:<subject>)")
+    ds_name, config, split, conv = spec
+    config = (config or "").replace("{subset}", subset) or None
+    if "{subset}" in (spec[1] or "") and not subset:
+        raise ValueError(f"{base!r} needs a subset, e.g. {base}:astronomy")
+    ds = load_dataset(ds_name, config, split=split)
+    rng = random.Random(seed)
+    probes = []
+    for item in ds:
+        p = conv(item, rng) if conv is _sciq else conv(item)
+        if p is None or len(p["choices"]) > 4 or len(p["choices"]) < 2:
+            continue
+        probes.append(p)
+    if len(probes) > n:
+        probes = rng.sample(probes, n)
+    return probes
+
+
+def ev_benchmark(model, tok, cfg):
+    name = (cfg.get("name") or "").strip()
+    if not name:
+        raise ValueError("benchmark needs cfg['name'], e.g. "
+                         "'arc_easy' or 'mmlu:astronomy'")
+    probes = _load_benchmark(name, int(cfg.get("n", 200)),
+                             int(cfg.get("seed", 0)))
+    r = EvalProber(model, tok).mc_accuracy(probes)
+    return {"benchmark": name, "mc_acc": round(r["accuracy"], 4),
+            "mc_n": r["n"]}
+
+
 EVALS: Dict[str, Callable] = {
     "combined": ev_combined,
     "mc_probes": ev_mc_probes,
@@ -164,6 +261,7 @@ EVALS: Dict[str, Callable] = {
     "custom_mc": ev_custom_mc,
     "loop_rate": ev_loop_rate,
     "custom_gen": ev_custom_gen,
+    "benchmark": ev_benchmark,
 }
 
 EVAL_DESCS = {
@@ -174,6 +272,7 @@ EVAL_DESCS = {
     "custom_mc": "MC accuracy on user probes (JSONL or list)",
     "loop_rate": "generation loop metrics on a prompt pack (AHA signal)",
     "custom_gen": "prompt pack + contains/regex/no_repeat check",
+    "benchmark": "standard dataset (mmlu:<subj>, arc_easy, boolq, ...)",
 }
 
 
