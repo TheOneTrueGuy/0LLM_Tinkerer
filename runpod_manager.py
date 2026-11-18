@@ -68,6 +68,33 @@ def load_runpod_api_key(project_dir: Optional[str] = None) -> str:
     return ""
 
 
+def load_notify_url(project_dir: Optional[str] = None) -> str:
+    """Load the job-finish webhook URL from env or local files."""
+    env_url = os.getenv("NOTIFY_URL", "").strip()
+    if env_url:
+        return env_url
+    base = Path(project_dir) if project_dir else Path(__file__).resolve().parent
+    for path in (base / "venv" / "ntfy_url.txt",
+                 base / "ntfy_url.txt",
+                 base / ".env"):
+        if not path.exists() or not path.is_file():
+            continue
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" in line:
+                    name, value = line.split("=", 1)
+                    if name.strip() == "NOTIFY_URL":
+                        return value.strip().strip('"').strip("'")
+                elif line.startswith("http"):
+                    return line
+        except OSError:
+            continue
+    return ""
+
+
 def proxy_url_from_pod_id(pod_id: str, port: int = 5000) -> str:
     return f"https://{pod_id.strip()}-{port}.proxy.runpod.net"
 
@@ -268,7 +295,7 @@ class RunPodManager:
         env: Optional[List[Dict[str, str]]] = None,
         ttl_minutes: int = 360,
         idle_minutes: int = 60,
-        notify_url: str = "",
+        notify_url: Optional[str] = None,
     ) -> PodInfo:
         """Create a new GPU pod, optionally embedding a handler via dockerArgs.
 
@@ -276,8 +303,11 @@ class RunPodManager:
         regardless, or after idle_minutes with no SSH sessions, GPU/CPU
         activity, or handler traffic. Pass 0 to disable either trip.
         notify_url: webhook POSTed when any background job finishes —
-        e.g. https://ntfy.sh/<topic> or an email API endpoint."""
+        e.g. https://ntfy.sh/<topic> or an email API endpoint.
+        None (default) loads from NOTIFY_URL env or venv/ntfy_url.txt."""
         docker_args = self._build_docker_args()
+        if notify_url is None:
+            notify_url = load_notify_url(project_dir)
 
         selected_gpu = gpu_type or GPU_PREFERENCE[0]
         safe_name = name.replace('"', "'").replace("\\", "")
