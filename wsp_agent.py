@@ -130,7 +130,7 @@ def make_tools(model_manager) -> List[Dict[str, Any]]:
                      "enum": ["combined", "mc_probes", "perplexity",
                               "custom_text_ppl", "custom_mc", "loop_rate",
                               "custom_gen"]},
-            "cfg": {"type": "object"}}),
+            "cfg": {"type": "object", "properties": {}}}),
         fn("check_compat",
            "Estimate merge coverage vs a reference checkpoint — config "
            "dims only, no weights downloaded",

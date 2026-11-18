@@ -1674,13 +1674,6 @@ def create_interface():
 
     # --- Eval probe: quantitative keep/revert signal ---
 
-    def _ev_prober():
-        if model_manager.eval_prober is None:
-            from eval_probe import EvalProber
-            model_manager.eval_prober = EvalProber(
-                model_manager.model, model_manager.tokenizer)
-        return model_manager.eval_prober
-
     def ev_run(kind, label, ev_input, check, expected, max_new):
         if model_manager.model is None:
             return "Load a base model first.", ""
@@ -1699,7 +1692,7 @@ def create_interface():
             cfg["prompts"] = lines
             cfg["check"], cfg["expected"] = check, expected
             cfg["max_new"] = int(max_new)
-        elif kind in ("perplexity", "combined") and ev_input.strip():
+        elif kind in ("perplexity", "combined") and (ev_input or "").strip():
             cfg["text"] = ev_input
         try:
             r = eval_registry.run_eval(
