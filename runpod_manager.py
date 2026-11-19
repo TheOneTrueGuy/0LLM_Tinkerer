@@ -245,6 +245,7 @@ class RunPodManager:
         "aha_editor.py",
         "aha_test.py",
         "sweep_eval.py",
+        "train.py",
         "podwatch.sh",
         "runpod_requirements.txt",
     ]
