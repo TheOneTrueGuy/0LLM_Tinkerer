@@ -276,7 +276,7 @@ class RunPodManager:
             "mv runpod_requirements.txt requirements-pod.txt",
             "( nohup bash /workspace/podwatch.sh "
             "> /workspace/podwatch_out.log 2>&1 & )",
-            "( pip install --no-cache-dir --ignore-installed "
+            "( pip install --no-cache-dir --upgrade "
             "--retries 10 --timeout 120 "
             "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log "
             "|| echo PIP_INSTALL_FAILED )",
