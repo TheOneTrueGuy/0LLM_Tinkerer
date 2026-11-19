@@ -50,21 +50,38 @@ Modelling)
   contrast prompts, and previously written facts
 - Works on GPT-2 Conv1D and Llama-family Linear projections alike;
   edits toggle for A/B compare and are individually undoable
+- VLM variant (`vlm_fact_editor.py`): writes visual associations (e.g.
+  "this breed → label") through the language side only — vision encoder
+  untouched
 
-**Eval Probe**
+**Eval Registry** (`eval_registry.py` — every experiment loop is
+*mutate → score → keep/revert*, so all scorers live behind one registry)
 
-- `mc_acc`: 28 multiple-choice probes scored by answer-letter logprob
-  (works on weak models); `ppl`: a fixed-passage fluency canary
-- Labeled history for before/after comparison — the quantitative
-  keep/revert signal for every other tab
+- Built-ins: `combined` (28 MC probes + perplexity canary),
+  `mc_probes`, `perplexity`, `loop_rate` (generation-loop metrics:
+  copied fraction, onset, cut count on a prompt pack)
+- Custom evals are data-defined — probe JSONL, pasted text, or a prompt
+  pack with contains/regex/no-repeat checks. No arbitrary code, so the
+  same evals run safely on remote pods
+- Benchmarks: `benchmark` eval loads HF datasets (`arc_easy`,
+  `arc_challenge`, `boolq`, `piqa`, `hellaswag`, `sciq`, `openbookqa`,
+  `mmlu:<subject>`), normalized onto the MC scorer
+- **Guard eval**: an eval used to choose edits is a training signal, not
+  a held-out measurement — so any eval can run a *guard* eval alongside
+  (recorded as `guard_*` metrics), and **Compare A→B** diffs two labeled
+  runs including guard metrics. Fit on the target, verify on the guard
+- Same registry backs local runs, pod `/eval`, and the agent's
+  `evaluate`/`eval_delta` tools
 
 **WSP Agent** (weight-space programming — an LLM driving the bench)
 
-- OpenRouter-hosted agent model (e.g. Qwen3.5) with 18 tools: inspect,
-  generate, evaluate, sculpt, fact-write, merge, and latent-basis ops
+- OpenRouter-hosted agent model with 19 tools: inspect, generate,
+  evaluate (any registered eval + optional guard), eval-diff, sculpt,
+  fact-write, merge, and latent-basis ops
 - Local or RunPod target: the agent can drive the pod's model over HTTP
 - Agent runs a full loop: eval → edit → eval → keep or revert, with the
-  streamed tool-call trace visible
+  streamed tool-call trace visible; repeated identical failing calls are
+  detected and nudged
 
 **Persistence**
 
@@ -85,10 +102,37 @@ Modelling)
   scale/ablate write column, bias push (exact equivalents of the steering
   hooks), or scale read rows; undoable op log + side-by-side compare
 
+**AHA loop editing** (`aha_editor.py`, `aha_test.py` — ported from
+Eppy-EpHard/AHA, MIT)
+
+- Activation-pair/LP editing for repetitive-loop behavior: dup-mask loop
+  detector, matched-pair direction finding, PDHG LP for sparse writes,
+  rank-one `down_proj` edits, `--pro` (pro-loop) control mode
+- Steering probe mode sweeps a residual direction at dose multiples with
+  random-vector controls — established that the separator direction is
+  causal but semantically sign-inverted on base Qwen2.5-0.5B
+- `sweep_eval.py`: λ-sweep any registry eval along a recorded weight
+  delta vs a norm-matched random direction — tests whether an eval can
+  rank edit directions (eval-as-compass, finite-difference signal)
+
+**iWSP Autoresearch** (`iwsp_driver.py` + `iwsp_harness/`, ported from
+the iWSP evolve experiments — OpenRouter instead of Claude Code)
+
+- An OpenRouter model gets file/eval/log tools confined to a run dir and
+  iterates `program.md` against the interpretable-transformer harness
+- Results so far: hand-written 100%-accuracy parity circuits compressed
+  to ~200 parameters, multiple distinct circuit families across seeds
+- iWSP Autoresearch tab: launch detached local runs, poll progress,
+  browse past runs' CSVs and snapshots
+
 **Remote & external tools**
 
 - RunPod Tinker: deploy/connect a GPU pod (no SSH needed), remote
   load/generate/invert, and remote neuron sweeps with progress polling
+- Pod job runner (`/run`, `/jobs`, `/job/<id>`) executes uploaded
+  scripts in the background with live log tailing, GPU util/mem stats,
+  and ntfy.sh push notifications on stage markers and job exit; pods
+  self-terminate on TTL/idle watchdog
 - Circuit Tracer: launches the circuit-tracer attribution CLI from an
   isolated venv (`circuit_venv`)
 
@@ -121,6 +165,15 @@ Modelling)
   or a RunPod pod and give it a goal ("find a neuron that affects
   repetition and ablate it"); it evaluates before/after and undoes edits
   that hurt
+- **Evaluate like you mean it**: score an edit on `benchmark:arc_easy`
+  while `perplexity` watches as guard, then Compare A→B — an optimized
+  metric is no longer held-out, so verify on the metric you didn't chase
+- **Run autoresearch**: fire an iWSP run from its tab and let an
+  OpenRouter agent write, evaluate, and compress a tiny transformer
+  circuit while you watch the CSV grow
+- **Probe edit directions**: `sweep_eval.py` slides λ along a recorded
+  weight delta against a random control — does the eval see a real
+  direction or just perturbation magnitude?
 - **Run the stack on GPU**: every remote op — eval, merges, fact writes —
   runs on a pod via the RunPod Tinker tab's weight-space accordion
 - **Follow the research trail**: steering-first neuron interpretation
@@ -259,8 +312,18 @@ The demo auto-detects `circuit_venv/Scripts/circuit-tracer.exe`, or set
   ensembles, PCA latent basis, PC-slider edits)
 - `fact_editor.py` — `FactEditor` (closed-form MEMIT-style fact writes)
 - `eval_probe.py` — `EvalProber` (MC accuracy + perplexity canary)
+- `eval_registry.py` — unified eval registry: built-ins, data-defined
+  custom evals, HF benchmark presets, guard evals, history + deltas
+- `aha_editor.py` / `aha_test.py` — AHA loop-detection metrics, LP
+  activation-pair edits, steering probes (runs on pod job runner)
+- `sweep_eval.py` — λ-sweep of a registry eval along a weight delta
+  vs norm-matched random control
+- `iwsp_driver.py` / `iwsp_harness/` — OpenRouter autoresearch loop +
+  vendored interpretable-transformer eval harness
+- `vlm_fact_editor.py` — visual association writes for VLMs (language
+  side only, vision encoder untouched)
 - `wsp_agent.py` — OpenRouter agent: tool schemas, local/remote executors,
-  agent loop
+  agent loop with repeated-failure nudging
 - `session_store.py` — session files + op-spec persistence
 - `layer_surgery.py` — `LayerSurgeon` structural block ops
 - `weight_inversion_implementation.py` — `WeightInverter`

@@ -428,7 +428,9 @@ SYSTEM_PROMPT = (
     "and use the evaluate tool BEFORE and AFTER edits — the mc_acc and "
     "perplexity deltas are your keep/revert signal. Generate text to "
     "inspect behavior qualitatively. Undo anything that hurts the model. "
-    "Explain briefly what you did and what you observed."
+    "If a tool call fails, read the error message and change your "
+    "approach — never repeat an identical failing call. Explain briefly "
+    "what you did and what you observed."
 )
 
 
@@ -444,6 +446,7 @@ def run_agent(model_manager, or_model: str, instruction: str,
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": instruction},
     ]
+    fail_seen: Dict[tuple, int] = {}
     for step in range(max_steps):
         resp = chat(or_model, messages, tools, temperature)
         msg = resp["choices"][0]["message"]
@@ -462,6 +465,17 @@ def run_agent(model_manager, or_model: str, instruction: str,
                 args = {}
             yield f"[{step + 1}] {fname}({json.dumps(args)})", False
             result = execute(fname, args)
+            key = (fname, json.dumps(args, sort_keys=True, default=str))
+            if '"error"' in result[:400]:
+                fail_seen[key] = fail_seen.get(key, 0) + 1
+                if fail_seen[key] >= 2:
+                    result += (
+                        f"\n[hint: this exact call has now failed "
+                        f"{fail_seen[key]} times — the arguments are "
+                        "wrong or the operation is unsupported. Do NOT "
+                        "retry it identically; change approach.]")
+            else:
+                fail_seen.pop(key, None)
             yield f"    -> {result[:300]}", False
             messages.append({
                 "role": "tool", "tool_call_id": c["id"],
