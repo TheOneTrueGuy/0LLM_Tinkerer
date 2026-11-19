@@ -126,13 +126,27 @@ def make_tools(model_manager) -> List[Dict[str, Any]]:
            "/ custom_gen (data-defined custom evals — pass probe/prompt/text "
            "payloads in cfg), benchmark (standard dataset — cfg.name "
            "e.g. 'arc_easy' or 'mmlu:astronomy', cfg.n sample size). "
-           "Label each run.",
+           "Optional 'guard' runs a second eval alongside — the eval you "
+           "optimize becomes training data, so verify edits on a guard "
+           "you are NOT optimizing. Label each run.",
            {"label": {"type": "string"},
             "eval": {"type": "string",
                      "enum": ["combined", "mc_probes", "perplexity",
                               "custom_text_ppl", "custom_mc", "loop_rate",
                               "custom_gen", "benchmark"]},
-            "cfg": {"type": "object", "properties": {}}}),
+            "cfg": {"type": "object", "properties": {}},
+            "guard": {"type": "string",
+                      "enum": ["combined", "mc_probes", "perplexity",
+                               "custom_text_ppl", "custom_mc",
+                               "loop_rate", "custom_gen",
+                               "benchmark"]}}),
+        fn("eval_delta",
+           "Diff two eval records by label — the keep/revert readout "
+           "after an edit. Reports a/b/delta for every shared metric "
+           "including guard_* metrics.",
+           {"label_a": {"type": "string"},
+            "label_b": {"type": "string"}},
+           ["label_a", "label_b"]),
         fn("check_compat",
            "Estimate merge coverage vs a reference checkpoint — config "
            "dims only, no weights downloaded",
@@ -270,9 +284,15 @@ def make_executor(model_manager) -> Callable[[str, Dict[str, Any]], str]:
                 import eval_registry
                 r = eval_registry.run_eval(
                     args.get("eval") or "combined", mm.model, mm.tokenizer,
-                    args.get("label") or "", args.get("cfg") or {})
+                    args.get("label") or "", args.get("cfg") or {},
+                    guard=args.get("guard"))
                 r["history"] = eval_registry.HISTORY
                 return json.dumps(r, default=str)
+            if name == "eval_delta":
+                import eval_registry
+                return json.dumps(eval_registry.delta_eval(
+                    args.get("label_a", ""), args.get("label_b", "")),
+                    default=str)
             wm = getattr(mm, "weight_merger", None)
             if name == "check_compat":
                 if wm is None:
@@ -371,7 +391,12 @@ def make_remote_executor(rm, proxy_url: str) -> Callable[[str, Dict[str, Any]], 
                 return json.dumps(
                     rm.remote_eval(proxy_url, args.get("label") or "",
                                    args.get("eval") or "combined",
-                                   args.get("cfg") or {}))
+                                   args.get("cfg") or {},
+                                   guard=args.get("guard")))
+            if name == "eval_delta":
+                return json.dumps(
+                    rm.remote_eval_delta(proxy_url, args.get("label_a", ""),
+                                         args.get("label_b", "")))
             if name == "check_compat":
                 return json.dumps(
                     rm.remote_ws_check(proxy_url, args["name"]))

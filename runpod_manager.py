@@ -583,11 +583,20 @@ class RunPodManager:
 
     def remote_eval(self, proxy_url: str, label: str = "",
                     eval_name: str = "combined",
-                    cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                    cfg: Optional[Dict[str, Any]] = None,
+                    guard: Optional[str] = None) -> Dict[str, Any]:
         r = requests.post(
             f"{proxy_url}/eval",
-            json={"label": label, "eval": eval_name, "cfg": cfg or {}},
+            json={"label": label, "eval": eval_name, "cfg": cfg or {},
+                  "guard": guard},
             timeout=600)
+        return r.json()
+
+    def remote_eval_delta(self, proxy_url: str, label_a: str,
+                          label_b: str) -> Dict[str, Any]:
+        r = requests.post(
+            f"{proxy_url}/eval_delta",
+            json={"label_a": label_a, "label_b": label_b}, timeout=60)
         return r.json()
 
     def remote_fact_write(

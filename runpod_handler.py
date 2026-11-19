@@ -491,8 +491,20 @@ def eval_probe():
             import eval_registry
             r = eval_registry.run_eval(
                 data.get("eval") or "combined", _model, _tokenizer,
-                data.get("label", ""), data.get("cfg") or {})
+                data.get("label", ""), data.get("cfg") or {},
+                guard=data.get("guard"))
             return jsonify(r)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/eval_delta", methods=["POST"])
+def eval_delta():
+    data = request.get_json(force=True) or {}
+    try:
+        import eval_registry
+        return jsonify(eval_registry.delta_eval(
+            data.get("label_a", ""), data.get("label_b", "")))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

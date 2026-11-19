@@ -277,8 +277,15 @@ EVAL_DESCS = {
 
 
 def run_eval(name: str, model, tok, label: str = "",
-             cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Run a registered eval and append the standardized record to HISTORY."""
+             cfg: Optional[Dict[str, Any]] = None,
+             guard: Optional[str] = None) -> Dict[str, Any]:
+    """Run a registered eval and append the standardized record to HISTORY.
+
+    ``guard`` optionally runs a SECOND eval alongside and prefixes its
+    metrics with ``guard_``. The distinction matters: the eval you
+    optimize becomes training data (Goodhart), so any eval-guided edit
+    should fit on the target and verify on a guard it is NOT optimizing.
+    """
     fn = EVALS.get(name)
     if fn is None:
         raise ValueError(f"unknown eval {name!r}; choices: {sorted(EVALS)}")
@@ -286,10 +293,37 @@ def run_eval(name: str, model, tok, label: str = "",
     details = metrics.pop("details", None)
     rec = {"label": label or f"{name}{len(HISTORY)}", "eval": name,
            "t": round(time.time(), 1), **metrics}
+    if guard:
+        gfn = EVALS.get(guard)
+        if gfn is None:
+            raise ValueError(f"unknown guard eval {guard!r}")
+        gcfg = dict(cfg or {})
+        gm = gfn(model, tok, gcfg)
+        gm.pop("details", None)
+        rec["guard_eval"] = guard
+        rec.update({f"guard_{k}": v for k, v in gm.items()})
     HISTORY.append(rec)
     if details is not None:
         rec["details"] = details
     return rec
+
+
+def delta_eval(label_a: str, label_b: str) -> Dict[str, Any]:
+    """Diff two HISTORY rows by label: {metric: {"a":..,"b":..,"delta":..}}
+    over shared numeric keys — the keep/revert readout for
+    eval -> edit -> eval workflows."""
+    ra = next((r for r in reversed(HISTORY) if r["label"] == label_a), None)
+    rb = next((r for r in reversed(HISTORY) if r["label"] == label_b), None)
+    if ra is None or rb is None:
+        raise ValueError(
+            f"labels not found (have {[r['label'] for r in HISTORY]})")
+    out = {}
+    for k in ra:
+        if isinstance(ra.get(k), (int, float)) and \
+                isinstance(rb.get(k), (int, float)) and k != "t":
+            out[k] = {"a": ra[k], "b": rb[k],
+                      "delta": round(rb[k] - ra[k], 4)}
+    return out
 
 
 def history_text() -> str:

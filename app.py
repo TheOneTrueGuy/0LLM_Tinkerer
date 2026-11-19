@@ -1678,7 +1678,7 @@ def create_interface():
     # --- Eval probe: quantitative keep/revert signal ---
 
     def ev_run(kind, label, ev_input, check, expected, max_new,
-               bench, benchn):
+               bench, benchn, guard):
         if model_manager.model is None:
             return "Load a base model first.", ""
         import eval_registry
@@ -1704,7 +1704,8 @@ def create_interface():
         try:
             r = eval_registry.run_eval(
                 kind, model_manager.model, model_manager.tokenizer,
-                (label or "").strip(), cfg)
+                (label or "").strip(), cfg,
+                guard=None if guard in (None, "none") else guard)
         except Exception as e:
             return f"Eval failed: {e}", eval_registry.history_text()
         show = {k: v for k, v in r.items() if k != "details"}
@@ -1714,6 +1715,15 @@ def create_interface():
         import eval_registry
         eval_registry.HISTORY.clear()
         return "History cleared.", ""
+
+    def ev_delta(la, lb):
+        import eval_registry
+        try:
+            d = eval_registry.delta_eval((la or "").strip(),
+                                         (lb or "").strip())
+            return json.dumps(d, indent=1), eval_registry.history_text()
+        except Exception as e:
+            return f"Delta failed: {e}", eval_registry.history_text()
 
     # --- WSP agent: an LLM driving the op surface via OpenRouter ---
 
@@ -2562,6 +2572,22 @@ def create_interface():
                         ev_benchn = gr.Slider(
                             25, 1000, value=200, step=25,
                             label="n samples")
+                    gr.Markdown(
+                        "**Guard eval**: an optimized eval stops being "
+                        "held-out — verify edits on a metric you are NOT "
+                        "optimizing (fit on target, verify on guard).")
+                    ev_guard = gr.Dropdown(
+                        choices=["none", "combined", "mc_probes",
+                                 "perplexity", "custom_text_ppl",
+                                 "custom_mc", "loop_rate", "custom_gen",
+                                 "benchmark"],
+                        value="none", label="Guard eval")
+                    with gr.Row():
+                        ev_la = gr.Textbox(label="label A (before)",
+                                           scale=1)
+                        ev_lb = gr.Textbox(label="label B (after)",
+                                           scale=1)
+                        ev_delta_btn = gr.Button("Compare A→B", scale=1)
                 ev_result = gr.Textbox(label="Latest result",
                                        interactive=False)
                 ev_history = gr.Textbox(label="Eval history", lines=12,
@@ -3886,8 +3912,11 @@ renderPlot();
         # Eval Probe
         ev_run_btn.click(fn=ev_run,
                          inputs=[ev_kind, ev_label, ev_input, ev_check,
-                                 ev_expected, ev_maxnew, ev_bench, ev_benchn],
+                                 ev_expected, ev_maxnew, ev_bench, ev_benchn,
+                                 ev_guard],
                          outputs=[ev_result, ev_history])
+        ev_delta_btn.click(fn=ev_delta, inputs=[ev_la, ev_lb],
+                           outputs=[ev_result, ev_history])
         ev_clear_btn.click(fn=ev_clear, outputs=[ev_result, ev_history])
 
         # WSP agent
