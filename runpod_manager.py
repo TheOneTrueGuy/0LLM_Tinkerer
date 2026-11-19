@@ -244,6 +244,7 @@ class RunPodManager:
         "vlm_fact_editor.py",
         "aha_editor.py",
         "aha_test.py",
+        "sweep_eval.py",
         "podwatch.sh",
         "runpod_requirements.txt",
     ]

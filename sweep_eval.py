@@ -41,6 +41,11 @@ def main():
     ap.add_argument("--max-new", type=int, default=1024)
     ap.add_argument("--lams", type=float, nargs="+",
                     default=[-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0])
+    ap.add_argument("--eval-cfg", default="{}",
+                    help="extra eval cfg as JSON, e.g. '{\"name\":\"arc_easy\",\"n\":200}'")
+    ap.add_argument("--guard", default=None, choices=list(eval_registry.EVALS),
+                    help="held-out eval run alongside each point (guard_* metrics)")
+    ap.add_argument("--guard-cfg", default="{}")
     ap.add_argument("--no-random", action="store_true")
     args = ap.parse_args()
 
@@ -79,9 +84,12 @@ def main():
     else:
         prompts = eval_registry.DEFAULT_LOOP_PROMPTS
     cfg = {"prompts": prompts, "max_new": args.max_new}
+    cfg.update(json.loads(args.eval_cfg))
+    gcfg = dict(cfg)
+    gcfg.update(json.loads(args.guard_cfg))
 
     results = {"base": args.base, "ref": args.ref, "eval": args.eval,
-               "n_prompts": len(prompts), "arms": {}}
+               "guard": args.guard, "n_prompts": len(prompts), "arms": {}}
     arms = [("delta", delta)] + ([] if args.no_random
                                 else [("random", rand_delta)])
     for arm_name, arm_delta in arms:
@@ -90,6 +98,10 @@ def main():
             apply_delta(model, base_sd, arm_delta, lam)
             t0 = time.time()
             m = eval_registry.EVALS[args.eval](model, tok, cfg)
+            if args.guard:
+                gm = eval_registry.EVALS[args.guard](model, tok, gcfg)
+                gm.pop("details", None)
+                m.update({f"guard_{k}": v for k, v in gm.items()})
             m["lam"], m["seconds"] = lam, round(time.time() - t0, 1)
             rows.append(m)
             print(f"{arm_name} lam={lam:+.2f}: {m}", flush=True)
