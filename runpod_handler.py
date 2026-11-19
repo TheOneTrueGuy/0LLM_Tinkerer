@@ -14,6 +14,7 @@ Exposes a small HTTP API that mirrors the local ModelManager operations:
 - /neuron_sweep + /neuron_sweep_status + /neuron_sweep_result
 """
 
+import json
 import logging
 import os
 import re
@@ -636,7 +637,7 @@ def sculpt_op():
             return jsonify({"error": f"unknown kind {kind}"}), 400
         if isinstance(r, dict):
             r.pop("backups", None)
-        return jsonify(r, default=str)
+        return jsonify(json.loads(json.dumps(r, default=str)))
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
