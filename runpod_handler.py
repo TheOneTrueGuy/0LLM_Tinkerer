@@ -768,14 +768,45 @@ _JOB_DIR = "/workspace/jobs"
 # API like formsubmit.co/<addr>. Optional NOTIFY_HEADER "K: V" for auth.
 
 
-def _job_notify_thread() -> None:
+# Stage lines worth forwarding to NOTIFY_URL mid-run: phase headers a
+# script prints ("=== matched pairs ==="), explicit NOTIFY: markers, and
+# RESULT lines.
+_STAGE_RE = re.compile(r"^(=== |NOTIFY:|RESULT)")
+
+
+def _post_notify(url: str, body: str) -> None:
     import urllib.request
+    req = urllib.request.Request(
+        url, data=body.encode(), method="POST",
+        headers={"Content-Type": "text/plain"})
+    hdr = os.environ.get("NOTIFY_HEADER", "")
+    if ":" in hdr:
+        k, v = hdr.split(":", 1)
+        req.add_header(k.strip(), v.strip())
+    urllib.request.urlopen(req, timeout=15)
+
+
+def _job_notify_thread() -> None:
     url = os.environ.get("NOTIFY_URL", "")
     while True:
         time.sleep(30)
         if not url:
             continue
         for j in _jobs.values():
+            # mid-run stage pings: forward new marker lines since last scan
+            try:
+                with open(j["log_path"], errors="replace") as fh:
+                    fh.seek(j.get("notify_off", 0))
+                    new = fh.read()
+                    j["notify_off"] = fh.tell()
+                marks = [l for l in new.splitlines() if _STAGE_RE.match(l)]
+                if marks:
+                    _post_notify(
+                        url, f"job {j['id']} ({j.get('name','job')}): "
+                             + "\n".join(marks[-8:]))
+            except Exception as e:
+                logger.warning(f"stage notify failed {j['id']}: {e}")
+            # exit notification (RESULT line or log tail)
             if j["proc"].poll() is None or j.get("notified"):
                 continue
             j["notified"] = True
@@ -786,16 +817,8 @@ def _job_notify_thread() -> None:
                     (l for l in reversed(tail.splitlines()) if "RESULT:" in l),
                     tail[-1500:])
                 rc = j["proc"].returncode
-                body = (f"job {j['id']} exited:{rc}\n{j['cmd']}\n\n{result}"
-                        ).encode()
-                req = urllib.request.Request(
-                    url, data=body, method="POST",
-                    headers={"Content-Type": "text/plain"})
-                hdr = os.environ.get("NOTIFY_HEADER", "")
-                if ":" in hdr:
-                    k, v = hdr.split(":", 1)
-                    req.add_header(k.strip(), v.strip())
-                urllib.request.urlopen(req, timeout=15)
+                _post_notify(
+                    url, f"job {j['id']} exited:{rc}\n{j['cmd']}\n\n{result}")
                 logger.info(f"job {j['id']}: notified {url}")
             except Exception as e:
                 logger.warning(f"notify failed for job {j['id']}: {e}")
@@ -854,10 +877,21 @@ def run_script():
 
 def _job_state(j: Dict[str, Any]) -> Dict[str, Any]:
     rc = j["proc"].poll()
-    return {"job_id": j["id"], "cmd": j["cmd"],
-            "status": "running" if rc is None else f"exited:{rc}",
-            "seconds": round(time.time() - j["started"]),
-            "log_path": j["log_path"]}
+    st = {"job_id": j["id"], "cmd": j["cmd"],
+          "status": "running" if rc is None else f"exited:{rc}",
+          "seconds": round(time.time() - j["started"]),
+          "log_path": j["log_path"]}
+    if rc is None:
+        try:
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=5).stdout.strip()
+            util, mem = out.split(",")
+            st["gpu"] = {"util_pct": int(util), "mem_mib": int(mem)}
+        except Exception:
+            pass
+    return st
 
 
 @app.route("/jobs", methods=["GET"])
