@@ -276,13 +276,16 @@ class RunPodManager:
             "mv runpod_requirements.txt requirements-pod.txt",
             "( nohup bash /workspace/podwatch.sh "
             "> /workspace/podwatch_out.log 2>&1 & )",
-            "( pip install --no-cache-dir --upgrade "
+            "( for i in 1 2 3 4 5 6; do pip install --no-cache-dir --upgrade "
             "--retries 10 --timeout 120 "
-            "-r /workspace/requirements-pod.txt 2>&1 | tee /workspace/pip.log "
-            "|| echo PIP_INSTALL_FAILED )",
+            "-r /workspace/requirements-pod.txt && break; sleep 20; done "
+            "2>&1 | tee /workspace/pip.log )",
             "( pip install --no-cache-dir --no-deps accelerate torchvision==0.17.2 "
             "2>&1 | tee -a /workspace/pip.log || echo DEPS_FAILED )",
-            "python runpod_handler.py 2>&1 | tee /workspace/server.log",
+            "python -c 'import flask, transformers' || pip install --no-cache-dir "
+            "flask 'transformers>=4.50.0,<5.0.0'",
+            "for i in 1 2 3; do python runpod_handler.py 2>&1 | tee "
+            "/workspace/server.log; sleep 10; done",
         ]
         return f"bash -xc '{' && '.join(steps)}'"
 
