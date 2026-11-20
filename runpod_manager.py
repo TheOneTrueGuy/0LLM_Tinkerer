@@ -280,7 +280,7 @@ class RunPodManager:
             "--ignore-installed blinker --retries 10 --timeout 120 "
             "-r /workspace/requirements-pod.txt && break; sleep 20; done "
             "2>&1 | tee /workspace/pip.log )",
-            "( pip install --no-cache-dir --no-deps accelerate torchvision==0.17.2 "
+            "( pip install --no-cache-dir --no-deps accelerate "
             "2>&1 | tee -a /workspace/pip.log || echo DEPS_FAILED )",
             "pip show flask transformers >/dev/null 2>&1 || pip install "
             "--no-cache-dir --ignore-installed blinker flask "
