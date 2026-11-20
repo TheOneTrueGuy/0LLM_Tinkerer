@@ -283,7 +283,8 @@ class RunPodManager:
             "( pip install --no-cache-dir --no-deps accelerate torchvision==0.17.2 "
             "2>&1 | tee -a /workspace/pip.log || echo DEPS_FAILED )",
             "pip show flask transformers >/dev/null 2>&1 || pip install "
-            "--no-cache-dir flask transformers==4.57.6",
+            "--no-cache-dir --ignore-installed blinker flask "
+            "transformers==4.57.6",
             "for i in 1 2 3; do python runpod_handler.py 2>&1 | tee "
             "/workspace/server.log; sleep 10; done",
         ]
